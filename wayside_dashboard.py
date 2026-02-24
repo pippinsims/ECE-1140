@@ -1,6 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# Import the wayside controller launcher — both files must be in the same folder
+from wayside_controller import launch_as_toplevel
+
+
 class WaysideDashboard(tk.Tk):
     """Wayside Control System Dashboard"""
     
@@ -353,10 +357,20 @@ Crossing states (bool) = [Value]"""
         tk.Label(left_frame, text="Use default settings", bg="white", 
                 font=("Arial", 10)).pack(pady=5)
         
-        default_btn = tk.Button(left_frame, text="Button", width=10, 
+        self.default_btn = tk.Button(left_frame, text="Button", width=10, 
                               command=self.use_default_settings)
-        default_btn.pack(pady=5)
-        
+        self.default_btn.pack(pady=5)
+
+        # Status label — shown when default settings window is open
+        self.default_status_label = tk.Label(
+            left_frame,
+            text="✔  Default settings are\ncurrently being used",
+            bg="white", fg="#2e7d32",
+            font=("Arial", 9, "italic"),
+            justify=tk.LEFT
+        )
+        # Not packed yet — shown only when window is open
+
         # Separator line
         separator = tk.Frame(plc_frame, bg="gray", width=2)
         separator.pack(side=tk.LEFT, fill=tk.Y, padx=20)
@@ -375,13 +389,18 @@ Crossing states (bool) = [Value]"""
                             width=30, state="readonly")
         file_entry.pack(side=tk.LEFT, padx=5)
         
-        browse_btn = tk.Button(upload_frame, text="Browse...", width=10, 
+        self.browse_btn = tk.Button(upload_frame, text="Browse...", width=10, 
                              command=self.browse_file)
-        browse_btn.pack(side=tk.LEFT, padx=5)
+        self.browse_btn.pack(side=tk.LEFT, padx=5)
         
-        upload_btn = tk.Button(right_frame, text="Upload", width=10, 
+        self.upload_btn = tk.Button(right_frame, text="Upload", width=10, 
                              command=self.upload_file)
-        upload_btn.pack(pady=5)
+        self.upload_btn.pack(pady=5)
+
+        # Attach tooltip to browse and upload buttons
+        _tip = "Unavailable: default settings are currently active.\nClose the Wayside Controller window to enable."
+        self._attach_tooltip(self.browse_btn, _tip)
+        self._attach_tooltip(self.upload_btn, _tip)
         
         # Configure grid weights
         parent.columnconfigure(0, weight=1)
@@ -571,9 +590,53 @@ Crossing states (bool) = {block_info.get('crossing_status', 'N/A')}"""
             messagebox.showwarning("Warning", "No file selected")
             
     def use_default_settings(self):
-        """Load default settings"""
-        print("Loading default settings...")
-        messagebox.showinfo("Info", "Default settings loaded")
+        """Open the Wayside Controller UI in a new window and lock PLC upload."""
+        wayside_win = launch_as_toplevel(self)
+        self._set_default_mode(active=True)
+        wayside_win.protocol("WM_DELETE_WINDOW", lambda: self._on_wayside_closed(wayside_win))
+
+    def _on_wayside_closed(self, win):
+        """Called when the Wayside Controller window is closed."""
+        win.destroy()
+        self._set_default_mode(active=False)
+
+    def _set_default_mode(self, active: bool):
+        """Enable or disable default-settings-active state."""
+        if active:
+            self.default_btn.config(state="disabled", bg="#d0d0d0", fg="#888888")
+            self.browse_btn.config(state="disabled", bg="#d0d0d0", fg="#888888")
+            self.upload_btn.config(state="disabled", bg="#d0d0d0", fg="#888888")
+            self.default_status_label.pack(pady=(0, 4))
+        else:
+            self.default_btn.config(state="normal", bg="SystemButtonFace", fg="black")
+            self.browse_btn.config(state="normal", bg="SystemButtonFace", fg="black")
+            self.upload_btn.config(state="normal", bg="SystemButtonFace", fg="black")
+            self.default_status_label.pack_forget()
+
+    def _attach_tooltip(self, widget, text):
+        """Show a tooltip on hover only when the widget is disabled."""
+        tip_win = []
+
+        def on_enter(event):
+            if widget["state"] == "disabled":
+                x = widget.winfo_rootx() + 20
+                y = widget.winfo_rooty() + widget.winfo_height() + 4
+                tw = tk.Toplevel(self)
+                tw.wm_overrideredirect(True)
+                tw.wm_geometry(f"+{x}+{y}")
+                tk.Label(tw, text=text, bg="#ffffe0", fg="black",
+                         font=("Arial", 9), relief="solid", borderwidth=1,
+                         padx=6, pady=4, justify=tk.LEFT).pack()
+                tip_win.append(tw)
+
+        def on_leave(event):
+            for tw in tip_win:
+                tw.destroy()
+            tip_win.clear()
+
+        widget.bind("<Enter>", on_enter)
+        widget.bind("<Leave>", on_leave)
+
 
 def main():
     """Entry point for the application"""

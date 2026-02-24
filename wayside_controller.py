@@ -275,16 +275,20 @@ C = {
 SIG_COLOR = {"green": C["green"], "yellow": C["yellow"], "red": C["red"]}
 
 
+
+
+
 # ─────────────────────────────────────────────────────────────────────────────
-# GUI
+# EMBEDDABLE FRAME  (all UI/logic in a tk.Frame so it can live in any window)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class WaysideApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Wayside Controller – Green & Red Lines")
-        self.configure(bg=C["bg"])
-        self.resizable(True, True)
+class WaysideFrame(tk.Frame):
+    """
+    The full wayside controller UI packaged as a Frame.
+    Can be embedded inside any tk.Tk, tk.Toplevel, or another Frame.
+    """
+    def __init__(self, parent, **kwargs):
+        super().__init__(parent, bg=C["bg"], **kwargs)
 
         self.lines = {
             "Green": {
@@ -293,9 +297,12 @@ class WaysideApp(tk.Tk):
                 "crossings":     GREEN_CROSSINGS,
                 "color":         C["green"],
                 "block_vars":    {},
-                "sw_labels":     {},
-                "sig_labels":    {},
+                "sw_labels":     {},   # {sw_id: (pos_lbl, route_lbl, override_var, override_btn)}
+                "sig_labels":    {},   # {blk: (dot, cell, num_lbl, override_var, cycle_btn)}
                 "cx_labels":     {},
+                "maintenance":   False,
+                "maint_btn":     None,
+                "maint_banner":  None,
             },
             "Red": {
                 "block_lengths": RED_BLOCK_LENGTHS,
@@ -306,16 +313,18 @@ class WaysideApp(tk.Tk):
                 "sw_labels":     {},
                 "sig_labels":    {},
                 "cx_labels":     {},
+                "maintenance":   False,
+                "maint_btn":     None,
+                "maint_banner":  None,
             },
         }
 
         self._build_ui()
         self._refresh()
 
-    # ── UI construction ────────────────────────────────────────────────────
+    # ── All UI/logic methods are identical to WaysideApp, using self (a Frame) ──
 
     def _build_ui(self):
-        # Header
         hdr = tk.Frame(self, bg=C["header"], pady=10)
         hdr.pack(fill="x")
         tk.Label(hdr, text="WAYSIDE CONTROLLER",
@@ -323,12 +332,11 @@ class WaysideApp(tk.Tk):
         tk.Label(hdr, text="Green Line  &  Red Line",
                  font=("Helvetica", 12), bg=C["header"], fg=C["muted"]).pack(side="left", padx=8)
 
-        # Style
         style = ttk.Style()
         style.theme_use("clam")
         style.configure("TNotebook",     background=C["bg"],   borderwidth=0)
         style.configure("TNotebook.Tab", background=C["card"], foreground=C["white"],
-                        padding=[14,6],  font=("Helvetica", 11, "bold"))
+                        padding=[14, 6], font=("Helvetica", 11, "bold"))
         style.map("TNotebook.Tab", background=[("selected", C["accent"])])
         style.configure("Vertical.TScrollbar", background=C["card"], troughcolor=C["bg"])
 
@@ -341,24 +349,55 @@ class WaysideApp(tk.Tk):
             self._build_line_tab(frame, name)
 
     def _build_line_tab(self, parent, name):
-        lc = self.lines[name]["color"]
+        lc   = self.lines[name]["color"]
+        line = self.lines[name]
+
         pw = tk.PanedWindow(parent, orient="horizontal", bg=C["bg"], sashwidth=5)
         pw.pack(fill="both", expand=True)
-
         left  = tk.Frame(pw, bg=C["bg"])
         right = tk.Frame(pw, bg=C["bg"])
         pw.add(left,  minsize=560)
         pw.add(right, minsize=500)
 
-        self._section_label(left,  "INPUTS  —  Track Model  &  CTC", lc)
-        self._make_scrollable(left,  self._build_block_inputs,   name, lc)
+        # ── Left: inputs ──────────────────────────────────────────────
+        self._section_label(left, "INPUTS  —  Track Model  &  CTC", lc)
+        self._make_scrollable(left, self._build_block_inputs, name, lc)
 
+        # ── Right: maintenance toggle bar (always visible, above scroll) ──
         self._section_label(right, "OUTPUTS  —  Computed by Wayside", lc)
+
+        maint_bar = tk.Frame(right, bg=C["bg"], pady=4)
+        maint_bar.pack(fill="x", padx=6)
+
+        maint_btn = tk.Button(
+            maint_bar,
+            text="🔧  Maintenance Mode: OFF",
+            font=("Helvetica", 9, "bold"),
+            bg=C["card"], fg=C["muted"],
+            activebackground=C["card"],
+            relief="flat", bd=0, padx=10, pady=5,
+            cursor="hand2",
+            command=lambda n=name: self._toggle_maintenance(n),
+        )
+        maint_btn.pack(side="left")
+
+        # Banner shown when maintenance is ON
+        maint_banner = tk.Label(
+            maint_bar,
+            text="  ⚠  Manual override active — computed values are paused",
+            font=("Helvetica", 8, "italic"),
+            bg=C["bg"], fg=C["orange"],
+        )
+        # Not packed until maintenance is on
+
+        line["maint_btn"]    = maint_btn
+        line["maint_banner"] = maint_banner
+
         self._make_scrollable(right, self._build_outputs_panel, name, lc)
 
     def _section_label(self, parent, text, color):
         f = tk.Frame(parent, bg=color, pady=4)
-        f.pack(fill="x", padx=4, pady=(6,2))
+        f.pack(fill="x", padx=4, pady=(6, 2))
         tk.Label(f, text=text, font=("Helvetica", 10, "bold"),
                  bg=color, fg="#000").pack(padx=10)
 
@@ -370,21 +409,17 @@ class WaysideApp(tk.Tk):
         sb.pack(side="right", fill="y")
         canvas.pack(fill="both", expand=True)
         frame = tk.Frame(canvas, bg=C["bg"])
-        win   = canvas.create_window((0,0), window=frame, anchor="nw")
+        win   = canvas.create_window((0, 0), window=frame, anchor="nw")
         frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(win, width=e.width))
         canvas.bind("<MouseWheel>",
                     lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
         builder_fn(frame, *args)
 
-    # ── Input builder ──────────────────────────────────────────────────────
-
     def _build_block_inputs(self, parent, name, lc):
         line = self.lines[name]
-
-        # Column headers
-        hdr = tk.Frame(parent, bg=C["panel"])
-        hdr.pack(fill="x", padx=4, pady=(4,0))
+        hdr  = tk.Frame(parent, bg=C["panel"])
+        hdr.pack(fill="x", padx=4, pady=(4, 0))
         for txt, w in [("Block", 14), ("Length (m)", 10), ("Occupied", 9),
                        ("Cmd Speed\n(km/h)", 12), ("Authority\n(km)", 11)]:
             tk.Label(hdr, text=txt, font=("Helvetica", 8, "bold"), bg=C["panel"],
@@ -430,32 +465,52 @@ class WaysideApp(tk.Tk):
                 "authority": auth_var,
             }
 
-    # ── Output builder ─────────────────────────────────────────────────────
-
     def _build_outputs_panel(self, parent, name, lc):
         line = self.lines[name]
 
-        # Switches
+        # ── Switch States ─────────────────────────────────────────────
         sw_card = self._card(parent, "Switch States")
         for sw_id, sw in line["switches"].items():
             row = tk.Frame(sw_card, bg=C["card"])
             row.pack(fill="x", pady=2, padx=4)
             tk.Label(row, text=f"{sw_id}  —  {sw['description']}", font=("Helvetica", 9),
                      bg=C["card"], fg=C["muted"], width=34, anchor="w").pack(side="left")
+
             pos_lbl   = tk.Label(row, text="NORMAL", font=("Helvetica", 9, "bold"),
                                  bg=C["card"], fg=C["green"], width=9)
             pos_lbl.pack(side="left", padx=4)
             route_lbl = tk.Label(row, text=sw["normal"][1], font=("Helvetica", 8),
                                  bg=C["card"], fg=C["muted"], width=14)
             route_lbl.pack(side="left")
-            line["sw_labels"][sw_id] = (pos_lbl, route_lbl)
 
-        # Signal grid
+            # Manual override toggle button (hidden until maintenance ON)
+            override_var = tk.StringVar(value="normal")
+            override_btn = tk.Button(
+                row,
+                text="▶ Set REVERSE",
+                font=("Helvetica", 8),
+                bg=C["panel"], fg=C["yellow"],
+                activebackground=C["panel"],
+                relief="flat", padx=6, pady=2,
+                cursor="hand2",
+            )
+            # Wire command after creation so we can reference the button itself
+            override_btn.config(
+                command=lambda sid=sw_id, n=name, v=override_var, b=override_btn:
+                    self._toggle_switch_override(sid, n, v, b)
+            )
+            # Not packed yet — shown only in maintenance mode
+
+            line["sw_labels"][sw_id] = (pos_lbl, route_lbl, override_var, override_btn)
+
+        # ── Signal States ─────────────────────────────────────────────
         sig_card = self._card(parent, "Signal States per Block  "
                               "(dot colour = signal;  blue background = within authority reach)")
         grid = tk.Frame(sig_card, bg=C["card"])
         grid.pack(fill="both", expand=True, padx=4, pady=4)
         cols = 10
+        SIG_CYCLE = ["green", "yellow", "red"]   # manual cycle order
+
         for i, blk in enumerate(sorted(line["block_lengths"].keys())):
             r, c = divmod(i, cols)
             cell = tk.Frame(grid, bg=C["bg"], bd=1, relief="solid")
@@ -467,9 +522,28 @@ class WaysideApp(tk.Tk):
             dot = tk.Label(cell, text="●", font=("Helvetica", 12),
                            bg=C["bg"], fg=C["muted"])
             dot.pack()
-            line["sig_labels"][blk] = (dot, cell, num_lbl)
 
-        # Crossings
+            # Cycle button — clicking steps green→yellow→red→green
+            override_var = tk.StringVar(value="green")
+            cycle_btn = tk.Button(
+                cell,
+                text="",          # will show current value in maintenance mode
+                font=("Helvetica", 6),
+                bg=C["bg"], fg=C["muted"],
+                activebackground=C["bg"],
+                relief="flat", padx=0, pady=0,
+                cursor="hand2",
+                width=4,
+            )
+            cycle_btn.config(
+                command=lambda b=blk, n=name, v=override_var:
+                    self._cycle_signal_override(b, n, v)
+            )
+            # Not packed yet
+
+            line["sig_labels"][blk] = (dot, cell, num_lbl, override_var, cycle_btn)
+
+        # ── Railway Crossing States ───────────────────────────────────
         cx_card = self._card(parent, "Railway Crossing States")
         for cx in line["crossings"]:
             row = tk.Frame(cx_card, bg=C["card"])
@@ -482,9 +556,8 @@ class WaysideApp(tk.Tk):
             lbl.pack(side="left", padx=6)
             line["cx_labels"][cx] = lbl
 
-        # Legend
         leg = tk.Frame(parent, bg=C["bg"])
-        leg.pack(fill="x", padx=6, pady=(6,2))
+        leg.pack(fill="x", padx=6, pady=(6, 2))
         tk.Label(leg, text="Legend:", font=("Helvetica", 8, "bold"),
                  bg=C["bg"], fg=C["muted"]).pack(side="left")
         for txt, col in [("  Green = clear", C["green"]), ("  Yellow = caution", C["yellow"]),
@@ -500,11 +573,8 @@ class WaysideApp(tk.Tk):
         inner.pack(fill="x")
         return inner
 
-    # ── Refresh (runs every time any input changes) ────────────────────────
-
     def _refresh(self, *_):
         for name, line in self.lines.items():
-            # Gather inputs
             block_state = {}
             for blk, bvars in line["block_vars"].items():
                 try:
@@ -524,11 +594,20 @@ class WaysideApp(tk.Tk):
             )
 
             all_reach = set().union(*result["reach"].values()) if result["reach"] else set()
+            in_maintenance = line["maintenance"]
 
-            # Update switches
+            # ── Switches ───────────────────────────────────────────────
             for sw_id, pos in result["switches"].items():
-                sw = line["switches"][sw_id]
-                pos_lbl, route_lbl = line["sw_labels"][sw_id]
+                sw    = line["switches"][sw_id]
+                entry = line["sw_labels"].get(sw_id)
+                if not entry:
+                    continue
+                pos_lbl, route_lbl, override_var, override_btn = entry
+
+                if in_maintenance:
+                    # Use the manual override value, not the computed one
+                    pos = override_var.get()
+
                 if pos == "normal":
                     pos_lbl.config(text="NORMAL",  fg=C["green"])
                     route_lbl.config(text=sw["normal"][1],  fg=C["muted"])
@@ -536,19 +615,24 @@ class WaysideApp(tk.Tk):
                     pos_lbl.config(text="REVERSE", fg=C["yellow"])
                     route_lbl.config(text=sw["reverse"][1], fg=C["yellow"])
 
-            # Update signal dots + authority reach highlight
+            # ── Signals ────────────────────────────────────────────────
             for blk, sig in result["signals"].items():
                 entry = line["sig_labels"].get(blk)
                 if not entry:
                     continue
-                dot, cell, num_lbl = entry
+                dot, cell, num_lbl, override_var, cycle_btn = entry
+
+                if in_maintenance:
+                    sig = override_var.get()
+
                 dot.config(fg=SIG_COLOR.get(sig, C["muted"]))
-                bg = C["reach"] if blk in all_reach else C["bg"]
+                # Suppress authority reach highlight in maintenance mode (less confusing)
+                bg = (C["reach"] if blk in all_reach else C["bg"]) if not in_maintenance else C["bg"]
                 cell.config(bg=bg)
                 dot.config(bg=bg)
                 num_lbl.config(bg=bg)
 
-            # Update crossings
+            # ── Crossings ──────────────────────────────────────────────
             for cx, state in result["crossings"].items():
                 lbl = line["cx_labels"].get(cx)
                 if lbl:
@@ -557,10 +641,141 @@ class WaysideApp(tk.Tk):
                     else:
                         lbl.config(text="INACTIVE", fg=C["green"])
 
+    # ── Maintenance mode helpers ───────────────────────────────────────────
+
+    def _toggle_maintenance(self, name):
+        """Toggle maintenance mode on/off for one line."""
+        line = self.lines[name]
+        line["maintenance"] = not line["maintenance"]
+        on = line["maintenance"]
+
+        btn     = line["maint_btn"]
+        banner  = line["maint_banner"]
+
+        if on:
+            btn.config(text="🔧  Maintenance Mode: ON",
+                       bg=C["orange"], fg="#000000")
+            banner.pack(side="left", padx=10)
+            # Seed override vars from the current computed state so toggles start correct
+            self._seed_overrides(name)
+        else:
+            btn.config(text="🔧  Maintenance Mode: OFF",
+                       bg=C["card"], fg=C["muted"])
+            banner.pack_forget()
+
+        # Show/hide interactive override widgets on switches and signals
+        self._set_override_widgets_visible(name, on)
+        self._refresh()
+
+    def _seed_overrides(self, name):
+        """Copy the current computed outputs into the override vars."""
+        line = self.lines[name]
+        block_state = {}
+        for blk, bvars in line["block_vars"].items():
+            try:
+                speed = float(bvars["cmd_speed"].get())
+                auth  = float(bvars["authority"].get())
+            except (tk.TclError, ValueError):
+                speed, auth = 0.0, 0.0
+            block_state[blk] = {
+                "occupied":  bvars["occupied"].get(),
+                "cmd_speed": speed,
+                "authority": auth,
+            }
+        result = compute_wayside_outputs(
+            block_state, line["block_lengths"],
+            line["switches"], line["crossings"],
+        )
+        for sw_id, pos in result["switches"].items():
+            entry = line["sw_labels"].get(sw_id)
+            if entry:
+                _, _, override_var, override_btn = entry
+                override_var.set(pos)
+                label = "▶ Set NORMAL" if pos == "reverse" else "▶ Set REVERSE"
+                override_btn.config(text=label)
+
+        for blk, sig in result["signals"].items():
+            entry = line["sig_labels"].get(blk)
+            if entry:
+                _, _, _, override_var, cycle_btn = entry
+                override_var.set(sig)
+                cycle_btn.config(text=sig[:1].upper(),
+                                 fg=SIG_COLOR.get(sig, C["muted"]))
+
+    def _set_override_widgets_visible(self, name, visible):
+        """Pack or forget all manual override buttons for a line."""
+        line = self.lines[name]
+        for sw_id, entry in line["sw_labels"].items():
+            _, _, override_var, override_btn = entry
+            if visible:
+                override_btn.pack(side="left", padx=(8, 0))
+            else:
+                override_btn.pack_forget()
+
+        for blk, entry in line["sig_labels"].items():
+            _, _, _, override_var, cycle_btn = entry
+            if visible:
+                cycle_btn.pack()
+            else:
+                cycle_btn.pack_forget()
+
+    def _toggle_switch_override(self, sw_id, name, override_var, btn):
+        """Flip the manual switch override between normal and reverse."""
+        current = override_var.get()
+        new_pos = "reverse" if current == "normal" else "normal"
+        override_var.set(new_pos)
+        btn.config(text="▶ Set NORMAL" if new_pos == "reverse" else "▶ Set REVERSE")
+        self._refresh()
+
+    def _cycle_signal_override(self, blk, name, override_var):
+        """Step the manual signal override: green → yellow → red → green."""
+        cycle = ["green", "yellow", "red"]
+        current = override_var.get()
+        next_sig = cycle[(cycle.index(current) + 1) % len(cycle)]
+        override_var.set(next_sig)
+        # Update the cycle button label and colour
+        entry = self.lines[name]["sig_labels"].get(blk)
+        if entry:
+            _, _, _, _, cycle_btn = entry
+            cycle_btn.config(text=next_sig[:1].upper(),
+                             fg=SIG_COLOR.get(next_sig, C["muted"]))
+        self._refresh()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STANDALONE LAUNCHER  (used when running wayside_controller.py directly)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class WaysideApp(tk.Tk):
+    """Thin wrapper that hosts WaysideFrame as a standalone application."""
+    def __init__(self):
+        super().__init__()
+        self.title("Wayside Controller – Green & Red Lines")
+        self.geometry("1300x840")
+        self.configure(bg=C["bg"])
+        self.resizable(True, True)
+        WaysideFrame(self).pack(fill="both", expand=True)
+
+
+def launch_as_toplevel(parent):
+    """
+    Open the Wayside Controller as a child Toplevel of an existing tkinter app.
+    Call this from the dashboard's 'Default Settings' button.
+
+    Usage:
+        from wayside_controller import launch_as_toplevel
+        launch_as_toplevel(self)   # pass the parent Tk/Toplevel
+    """
+    win = tk.Toplevel(parent)
+    win.title("Wayside Controller – Green & Red Lines")
+    win.geometry("1300x840")
+    win.configure(bg=C["bg"])
+    win.resizable(True, True)
+    WaysideFrame(win).pack(fill="both", expand=True)
+    return win
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    app = WaysideApp()
-    app.geometry("1300x840")
-    app.mainloop()
+    WaysideApp().mainloop()
