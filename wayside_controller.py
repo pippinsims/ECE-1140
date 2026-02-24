@@ -290,7 +290,10 @@ class WaysideFrame(tk.Frame):
     def __init__(self, parent, compute_fn=None, **kwargs):
         super().__init__(parent, bg=C["bg"], **kwargs)
         # Use provided compute function or fall back to the built-in one
-        self._compute_fn = compute_fn if compute_fn is not None else compute_wayside_outputs
+        self._compute_fn   = compute_fn if compute_fn is not None else compute_wayside_outputs
+        self._testing_mode = False  # Start in live mode
+        self._live_job     = None   # holds the after() id for live polling
+        self._input_widgets = {"Green": [], "Red": []}  # list of (cb, sp_speed, sp_auth) per block
 
         self.lines = {
             "Green": {
@@ -323,6 +326,8 @@ class WaysideFrame(tk.Frame):
 
         self._build_ui()
         self._refresh()
+        # Apply initial state (testing ON by default)
+        self._apply_testing_mode()
 
     # ── All UI/logic methods are identical to WaysideApp, using self (a Frame) ──
 
@@ -333,6 +338,27 @@ class WaysideFrame(tk.Frame):
                  font=("Helvetica", 20, "bold"), bg=C["header"], fg=C["white"]).pack(side="left", padx=20)
         tk.Label(hdr, text="Green Line  &  Red Line",
                  font=("Helvetica", 12), bg=C["header"], fg=C["muted"]).pack(side="left", padx=8)
+
+        # Testing mode toggle — global, lives in the header
+        self._test_btn = tk.Button(
+            hdr,
+            text="🧪  Testing Mode: ON",
+            font=("Helvetica", 9, "bold"),
+            bg=C["green"], fg="#000000",
+            activebackground=C["green"],
+            relief="flat", bd=0, padx=12, pady=5,
+            cursor="hand2",
+            command=self._toggle_testing_mode,
+        )
+        self._test_btn.pack(side="right", padx=20)
+
+        self._test_banner = tk.Label(
+            hdr,
+            text="  LIVE  —  receiving data from CTC & Track Model every 1s",
+            font=("Helvetica", 8, "italic"),
+            bg=C["header"], fg=C["yellow"],
+        )
+        # Packed only when live mode is active
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -447,10 +473,12 @@ class WaysideFrame(tk.Frame):
             speed_var = tk.DoubleVar(value=0.0)
             auth_var  = tk.DoubleVar(value=0.0)
 
-            tk.Checkbutton(row, variable=occ_var, bg=row_bg, fg=lc,
-                           activebackground=row_bg, selectcolor=row_bg,
-                           command=self._refresh).pack(side="left", padx=10)
+            cb = tk.Checkbutton(row, variable=occ_var, bg=row_bg, fg=lc,
+                                activebackground=row_bg, selectcolor=row_bg,
+                                command=self._refresh)
+            cb.pack(side="left", padx=10)
 
+            spinboxes = []
             for var, hi, inc, fmt in [(speed_var, 200, 5, "%.0f"),
                                        (auth_var,  100, 0.05, "%.2f")]:
                 sp = tk.Spinbox(row, from_=0, to=hi, increment=inc, textvariable=var,
@@ -460,6 +488,10 @@ class WaysideFrame(tk.Frame):
                 sp.pack(side="left", padx=5)
                 sp.bind("<Return>",   lambda e: self._refresh())
                 sp.bind("<FocusOut>", lambda e: self._refresh())
+                spinboxes.append(sp)
+
+            # Store widget references so we can lock/unlock them
+            self._input_widgets[name].append((cb, spinboxes[0], spinboxes[1]))
 
             line["block_vars"][blk] = {
                 "occupied":  occ_var,
@@ -642,6 +674,111 @@ class WaysideFrame(tk.Frame):
                         lbl.config(text="ACTIVE",   fg=C["orange"])
                     else:
                         lbl.config(text="INACTIVE", fg=C["green"])
+
+    # ── Testing mode helpers ──────────────────────────────────────────────────
+
+    def _toggle_testing_mode(self):
+        """Switch between Testing (manual) and Live (auto-push) mode."""
+        self._testing_mode = not self._testing_mode
+        self._apply_testing_mode()
+
+    def _apply_testing_mode(self):
+        """Update button appearance and lock/unlock inputs based on current mode."""
+        if self._testing_mode:
+            # Cancel live polling if running
+            if self._live_job is not None:
+                self.after_cancel(self._live_job)
+                self._live_job = None
+            self._test_btn.config(
+                text="🧪  Testing Mode: ON",
+                bg=C["green"], fg="#000000",
+            )
+            self._test_banner.pack_forget()
+            self._set_inputs_locked(False)
+        else:
+            # Switch to live mode — lock inputs and start polling
+            self._test_btn.config(
+                text="📡  Live Mode: ON",
+                bg=C["yellow"], fg="#000000",
+            )
+            self._test_banner.pack(side="right", padx=10)
+            self._set_inputs_locked(True)
+            self._schedule_live_poll()
+
+    def _set_inputs_locked(self, locked):
+        """Enable or disable all block input widgets across both lines."""
+        state = "disabled" if locked else "normal"
+        cb_state = "disabled" if locked else "normal"
+        dim_fg  = C["muted"]
+        norm_fg = C["white"]
+        for name, widgets in self._input_widgets.items():
+            for cb, sp_speed, sp_auth in widgets:
+                cb.config(state=cb_state)
+                for sp in (sp_speed, sp_auth):
+                    sp.config(state=state,
+                              fg=dim_fg if locked else norm_fg)
+
+    def _schedule_live_poll(self):
+        """Schedule the next live data push in 1 second."""
+        if not self._testing_mode:
+            self._poll_live_data()
+            self._live_job = self.after(1000, self._schedule_live_poll)
+
+    def _poll_live_data(self):
+        """
+        Called every second in Live Mode.
+        Push incoming CTC + Track Model data into the block input vars.
+
+        ── HOW TO CONNECT YOUR CTC & TRACK MODEL ──────────────────────────
+        Call  self.receive_live_data(line_name, block_data)  from your
+        external modules, where:
+
+            line_name  : "Green" or "Red"
+            block_data : dict  {block_num: {
+                                    "occupied":  bool,
+                                    "cmd_speed": float,   # km/h from CTC
+                                    "authority": float,   # km  from CTC
+                                }}
+
+        This method is the stub — replace the pass below with your data
+        fetch once CTC and Track Model are ready.
+        ────────────────────────────────────────────────────────────────────
+        """
+        # ── STUB: replace with real CTC / Track Model data fetch ──────────
+        # Example:
+        #   for line_name in ["Green", "Red"]:
+        #       data = ctc_module.get_block_states(line_name)
+        #       self.receive_live_data(line_name, data)
+        pass
+
+    def receive_live_data(self, line_name, block_data):
+        """
+        Push live block data into the input fields and trigger a refresh.
+        Called by CTC / Track Model integration.
+
+        Parameters
+        ----------
+        line_name  : "Green" or "Red"
+        block_data : {block_num: {"occupied": bool,
+                                  "cmd_speed": float,
+                                  "authority": float}}
+        """
+        if self._testing_mode:
+            return  # ignore live pushes while in testing mode
+
+        line = self.lines.get(line_name)
+        if not line:
+            return
+
+        for blk, data in block_data.items():
+            bvars = line["block_vars"].get(blk)
+            if not bvars:
+                continue
+            bvars["occupied"].set(bool(data.get("occupied", False)))
+            bvars["cmd_speed"].set(float(data.get("cmd_speed", 0.0)))
+            bvars["authority"].set(float(data.get("authority", 0.0)))
+
+        self._refresh()
 
     # ── Maintenance mode helpers ───────────────────────────────────────────
 
