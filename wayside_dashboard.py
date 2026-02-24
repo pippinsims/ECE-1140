@@ -360,6 +360,14 @@ Crossing states (bool) = [Value]"""
                                            fg="#c0392b", font=("Arial", 9, "italic"))
         self.browse_error_label.pack(anchor="w", padx=5)
 
+        # "How does PLC work?" hover-help label
+        plc_help_label = tk.Label(right_frame, text="❓ How does PLC work?",
+                                  bg="white", fg="#1a6fad",
+                                  font=("Arial", 9, "underline"),
+                                  cursor="hand2")
+        plc_help_label.pack(anchor="w", padx=5, pady=(2, 0))
+        plc_help_label.bind("<Button-1>", lambda e: self._show_plc_help())
+
         self.upload_btn = tk.Button(right_frame, text="Upload", width=10, 
                              command=self.upload_file)
         self.upload_btn.pack(pady=5)
@@ -639,6 +647,107 @@ Crossing states (bool) = {block_info.get('crossing_status', 'N/A')}"""
         """Called when the PLC Wayside Controller window is closed."""
         win.destroy()
         self._set_plc_mode(active=False)
+
+    def _show_plc_help(self):
+        popup = tk.Toplevel(self)
+        popup.title("How does PLC work?")
+        popup.configure(bg="#1e1e1e")
+        popup.resizable(False, False)
+
+        tk.Label(popup,
+                 text="PLC File — Required Syntax",
+                 bg="#007acc", fg="white",
+                 font=("Helvetica", 11, "bold"),
+                 anchor="w", padx=16, pady=8
+                 ).pack(fill="x")
+
+        content = tk.Text(popup,
+                          bg="#1e1e1e", fg="#cccccc",
+                          font=("Courier", 9),
+                          relief="flat",
+                          padx=16, pady=12,
+                          wrap="none",
+                          width=72, height=26,
+                          state="normal",
+                          cursor="arrow")
+        content.pack(fill="both", expand=True)
+
+        content.tag_configure("white",  foreground="#cccccc")
+        content.tag_configure("blue",   foreground="#9cdcfe")
+        content.tag_configure("green",  foreground="#4ec994")
+        content.tag_configure("grey",   foreground="#6a9955")
+        content.tag_configure("yellow", foreground="#dcdcaa")
+        content.tag_configure("sep",    foreground="#555555")
+        content.tag_configure("bold",   font=("Courier", 9, "bold"), foreground="#ffffff")
+
+        def ins(text, tag="white"):
+            content.insert("end", text, tag)
+
+        ins("Your PLC file must be a .py file with no spaces in the name.\n")
+        ins("It must define exactly this function:\n\n")
+        ins("─" * 62 + "\n", "sep")
+        ins("\ndef ", "white")
+        ins("compute_wayside_outputs", "yellow")
+        ins("(\n", "white")
+        ins("        block_state,      ", "blue")
+        ins("# dict: {block_num: {occupied, cmd_speed, authority}}\n", "grey")
+        ins("        block_lengths,    ", "blue")
+        ins("# dict: {block_num: length_in_metres}\n", "grey")
+        ins("        switches_def,     ", "blue")
+        ins("# dict: switch definitions for the line\n", "grey")
+        ins("        crossings_list    ", "blue")
+        ins("# list: block numbers that have crossings\n", "grey")
+        ins("):\n", "white")
+        ins("    ", "white")
+        ins("# Your custom wayside logic here\n", "grey")
+        ins("    return {\n", "white")
+        ins("        'switches'", "blue")
+        ins(":  {sw_id: ", "white")
+        ins("'normal'", "green")
+        ins(" or ", "white")
+        ins("'reverse'", "green")
+        ins("},\n", "white")
+        ins("        'signals'", "blue")
+        ins(":   {block_num: ", "white")
+        ins("'green'", "green")
+        ins(", ", "white")
+        ins("'yellow'", "yellow")
+        ins(", or ", "white")
+        ins("'red'", "blue")
+        ins("},\n", "white")
+        ins("        'crossings'", "blue")
+        ins(": {block_num: ", "white")
+        ins("'active'", "green")
+        ins(" or ", "white")
+        ins("'inactive'", "blue")
+        ins("},\n", "white")
+        ins("        'reach'", "blue")
+        ins(":     {},   ", "white")
+        ins("# can be empty dict\n", "grey")
+        ins("    }\n", "white")
+        ins("\n" + "─" * 62 + "\n", "sep")
+        ins("\nNotes:\n", "bold")
+        ins("  • The function is called on every refresh for each line.\n", "grey")
+        ins("  • Empty 'reach' dict disables the authority blue highlight.\n", "grey")
+        ins("  • Upload is rejected if this function is missing.\n", "grey")
+
+        content.config(state="disabled")
+
+        tk.Button(popup, text="OK", width=12,
+                  bg="#007acc", fg="white",
+                  font=("Helvetica", 9, "bold"),
+                  relief="flat", padx=6, pady=5,
+                  cursor="hand2",
+                  activebackground="#005f9e",
+                  command=popup.destroy).pack(pady=10)
+
+        popup.update_idletasks()
+        pw = popup.winfo_reqwidth()
+        ph = popup.winfo_reqheight()
+        x = self.winfo_rootx() + (self.winfo_width()  - pw) // 2
+        y = self.winfo_rooty() + (self.winfo_height() - ph) // 2
+        popup.geometry(f"+{max(0,x)}+{max(0,y)}")
+        popup.grab_set()
 
     def _attach_tooltip(self, widget, text):
         """Show a tooltip on hover only when the widget is disabled."""
