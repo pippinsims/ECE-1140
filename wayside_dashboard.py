@@ -1,8 +1,16 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import os
 
 # Import the wayside controller launcher — both files must be in the same folder
 from wayside_controller import launch_as_toplevel
+
+# PIL for image loading (pip install pillow if missing)
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 
 class WaysideDashboard(tk.Tk):
@@ -171,54 +179,51 @@ class WaysideDashboard(tk.Tk):
         title_label.pack(side=tk.LEFT, padx=20, pady=10, expand=True)
         
     def create_track_area(self):
-        """Create the track visualization area"""
+        """Display the Red & Green Line track map image."""
         track_frame = tk.Frame(self, bg="white", relief=tk.SUNKEN, borderwidth=2)
         track_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
-        
-        # Green line (top track)
-        green_canvas = tk.Canvas(track_frame, bg="white", height=80, highlightthickness=1, 
-                                highlightbackground="green")
-        green_canvas.pack(fill=tk.X, padx=5, pady=5)
-        self.draw_track_line(green_canvas, "green")
-        
-        # Red line (bottom track)
-        red_canvas = tk.Canvas(track_frame, bg="white", height=80, highlightthickness=1, 
-                              highlightbackground="red")
-        red_canvas.pack(fill=tk.X, padx=5, pady=5)
-        self.draw_track_line(red_canvas, "red")
-        
-    def draw_track_line(self, canvas, color):
-        """Draw a track line with stations and switches"""
-        canvas.update_idletasks()
-        width = canvas.winfo_width() if canvas.winfo_width() > 1 else 800
-        height = canvas.winfo_height() if canvas.winfo_height() > 1 else 80
-        
-        y_main = height // 2
-        
-        # Draw main horizontal line
-        canvas.create_line(20, y_main, width - 20, y_main, fill=color, width=2, arrow=tk.LAST)
-        
-        # Draw stations (small circles along the line)
-        num_stations = 12
-        for i in range(num_stations):
-            x = 20 + (width - 40) * i / (num_stations - 1)
-            canvas.create_oval(x-4, y_main-4, x+4, y_main+4, fill=color, outline=color)
-            
-        # Draw a switch/junction area (example)
-        switch_x = width // 2
-        if color == "green":
-            # Upper junction
-            canvas.create_line(switch_x, y_main, switch_x, y_main - 25, fill=color, width=2)
-            canvas.create_line(switch_x, y_main - 25, switch_x + 80, y_main - 25, 
-                             fill=color, width=2, arrow=tk.LAST)
-            canvas.create_rectangle(switch_x - 15, y_main - 10, switch_x + 15, y_main + 10, 
-                                  fill="lightblue", outline=color, width=2)
+
+        # Locate the image next to this script
+        img_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Picture1.png")
+
+        if PIL_AVAILABLE and os.path.exists(img_path):
+            self._load_map_image(track_frame, img_path)
         else:
-            # Lower junction
-            canvas.create_line(switch_x - 100, y_main, switch_x - 100, y_main + 25, 
-                             fill=color, width=2)
-            canvas.create_line(switch_x - 100, y_main + 25, switch_x, y_main + 25, 
-                             fill=color, width=2, arrow=tk.LAST)
+            # Fallback: plain label if PIL missing or file not found
+            msg = "Map image not found. Place Picture1.png in the same folder as this script."
+            if not PIL_AVAILABLE:
+                msg = "Install Pillow to display the map:  pip install pillow"
+            tk.Label(track_frame, text=msg, bg="white", fg="gray",
+                     font=("Arial", 10, "italic")).pack(expand=True)
+
+    def _load_map_image(self, parent, img_path):
+        """Load, scale to fit, and display the map image inside parent."""
+        # Canvas fills the frame; image is drawn on it so it can scale with the window
+        canvas = tk.Canvas(parent, bg="white", highlightthickness=0)
+        canvas.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        pil_img = Image.open(img_path)
+        self._map_pil   = pil_img   # keep reference
+        self._map_canvas = canvas
+
+        def _redraw(event=None):
+            w = canvas.winfo_width()
+            h = canvas.winfo_height()
+            if w < 2 or h < 2:
+                return
+            # Scale image to fit while preserving aspect ratio
+            img_w, img_h = self._map_pil.size
+            scale = min(w / img_w, h / img_h)
+            new_w = max(1, int(img_w * scale))
+            new_h = max(1, int(img_h * scale))
+            resized = self._map_pil.resize((new_w, new_h), Image.LANCZOS)
+            self._map_tk = ImageTk.PhotoImage(resized)
+            canvas.delete("all")
+            canvas.create_image(w // 2, h // 2, anchor="center", image=self._map_tk)
+
+        canvas.bind("<Configure>", _redraw)
+        # Draw once after layout settles
+        canvas.after(50, _redraw)
             
     def create_bottom_section(self):
         """Create bottom section with controls and information"""
