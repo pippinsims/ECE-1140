@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import os
+import importlib.util
 
 # Import the wayside controller launcher — both files must be in the same folder
 from wayside_controller import launch_as_toplevel
@@ -353,15 +354,31 @@ Crossing states (bool) = [Value]"""
         self.browse_btn = tk.Button(upload_frame, text="Browse...", width=10, 
                              command=self.browse_file)
         self.browse_btn.pack(side=tk.LEFT, padx=5)
-        
+
+        # Validation error label (shown when browse rejects a file)
+        self.browse_error_label = tk.Label(right_frame, text="", bg="white",
+                                           fg="#c0392b", font=("Arial", 9, "italic"))
+        self.browse_error_label.pack(anchor="w", padx=5)
+
         self.upload_btn = tk.Button(right_frame, text="Upload", width=10, 
                              command=self.upload_file)
         self.upload_btn.pack(pady=5)
 
-        # Attach tooltip to browse and upload buttons
-        _tip = "Unavailable: default settings are currently active.\nClose the Wayside Controller window to enable."
-        self._attach_tooltip(self.browse_btn, _tip)
-        self._attach_tooltip(self.upload_btn, _tip)
+        # Status label shown when PLC window is open
+        self.plc_status_label = tk.Label(
+            right_frame,
+            text="✔  PLC file is currently active",
+            bg="white", fg="#2e7d32",
+            font=("Arial", 9, "italic"),
+            justify=tk.LEFT
+        )
+        # Not packed yet
+
+        # Attach tooltips (shown only when disabled)
+        self._attach_tooltip(self.browse_btn,
+            "Unavailable: a controller window is currently open.")
+        self._attach_tooltip(self.upload_btn,
+            "Unavailable: a controller window is currently open.")
         
         # Configure grid weights
         parent.columnconfigure(0, weight=1)
@@ -514,21 +531,72 @@ Crossing states (bool) = {block_info.get('crossing_status', 'N/A')}"""
                           f"Crossing status updated to {new_status} for Block {block_num}")
         
     def browse_file(self):
-        """Open file browser to select PLC file"""
+        """Open file browser — validate .py and no spaces in filename."""
         filename = filedialog.askopenfilename(
             title="Select PLC File",
             filetypes=[("Python files", "*.py"), ("All files", "*.*")]
         )
-        if filename:
-            self.plc_file_path.set(filename)
+        if not filename:
+            return
+
+        basename = os.path.basename(filename)
+
+        # Validate extension
+        if not basename.lower().endswith(".py"):
+            self.plc_file_path.set("")
+            self.browse_error_label.config(
+                text="✗  Only .py files are accepted."
+            )
+            return
+
+        # Validate no spaces in filename
+        if " " in basename:
+            self.plc_file_path.set("")
+            self.browse_error_label.config(
+                text="✗  File name cannot contain spaces."
+            )
+            return
+
+        # File is valid
+        self.plc_file_path.set(filename)
+        self.browse_error_label.config(text="")
             
     def upload_file(self):
-        """Handle PLC file upload"""
-        if self.plc_file_path.get():
-            print(f"Uploading file: {self.plc_file_path.get()}")
-            messagebox.showinfo("Success", "PLC file uploaded successfully")
-        else:
-            messagebox.showwarning("Warning", "No file selected")
+        """Validate PLC file, import it, and open a wayside window using its logic."""
+        path = self.plc_file_path.get()
+        if not path:
+            messagebox.showwarning("Warning", "No file selected. Use Browse to pick a .py file.")
+            return
+
+        # Dynamically import the PLC file
+        try:
+            spec   = importlib.util.spec_from_file_location("plc_module", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception as e:
+            messagebox.showerror("Import Error",
+                f"Could not load the PLC file:\n{e}")
+            return
+
+        # Check it defines compute_wayside_outputs
+        if not hasattr(module, "compute_wayside_outputs"):
+            messagebox.showerror("Missing Function",
+                "The PLC file does not define a function named:\n"
+                "  compute_wayside_outputs(block_state, block_lengths, "
+                "switches_def, crossings_list)\n\n"
+                "Please add this function and try again.")
+            return
+
+        # All good — open the wayside window with the PLC's compute function
+        basename = os.path.basename(path)
+        plc_win = launch_as_toplevel(
+            self,
+            compute_fn=module.compute_wayside_outputs,
+            title=f"Wayside Controller – PLC: {basename}"
+        )
+        self._set_plc_mode(active=True)
+        plc_win.protocol("WM_DELETE_WINDOW",
+                         lambda: self._on_plc_closed(plc_win))
             
     def use_default_settings(self):
         """Open the Wayside Controller UI in a new window and lock PLC upload."""
@@ -553,6 +621,24 @@ Crossing states (bool) = {block_info.get('crossing_status', 'N/A')}"""
             self.browse_btn.config(state="normal", bg="SystemButtonFace", fg="black")
             self.upload_btn.config(state="normal", bg="SystemButtonFace", fg="black")
             self.default_status_label.pack_forget()
+
+    def _set_plc_mode(self, active: bool):
+        """Enable or disable PLC-active state (mirrors _set_default_mode for the PLC side)."""
+        if active:
+            self.default_btn.config(state="disabled", bg="#d0d0d0", fg="#888888")
+            self.browse_btn.config(state="disabled", bg="#d0d0d0", fg="#888888")
+            self.upload_btn.config(state="disabled", bg="#d0d0d0", fg="#888888")
+            self.plc_status_label.pack(pady=(0, 4))
+        else:
+            self.default_btn.config(state="normal", bg="SystemButtonFace", fg="black")
+            self.browse_btn.config(state="normal", bg="SystemButtonFace", fg="black")
+            self.upload_btn.config(state="normal", bg="SystemButtonFace", fg="black")
+            self.plc_status_label.pack_forget()
+
+    def _on_plc_closed(self, win):
+        """Called when the PLC Wayside Controller window is closed."""
+        win.destroy()
+        self._set_plc_mode(active=False)
 
     def _attach_tooltip(self, widget, text):
         """Show a tooltip on hover only when the widget is disabled."""

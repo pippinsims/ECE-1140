@@ -1,0 +1,8 @@
+def compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_list):
+    # your logic here
+    return {
+        "switches":  {...},   # {sw_id: "normal" or "reverse"}
+        "signals":   {...},   # {blk: "green", "yellow", or "red"}
+        "crossings": {...},   # {blk: "active" or "inactive"}
+        "reach":     {},      # {blk: set()} — can be empty if not needed
+    }

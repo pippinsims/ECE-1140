@@ -287,8 +287,10 @@ class WaysideFrame(tk.Frame):
     The full wayside controller UI packaged as a Frame.
     Can be embedded inside any tk.Tk, tk.Toplevel, or another Frame.
     """
-    def __init__(self, parent, **kwargs):
+    def __init__(self, parent, compute_fn=None, **kwargs):
         super().__init__(parent, bg=C["bg"], **kwargs)
+        # Use provided compute function or fall back to the built-in one
+        self._compute_fn = compute_fn if compute_fn is not None else compute_wayside_outputs
 
         self.lines = {
             "Green": {
@@ -588,7 +590,7 @@ class WaysideFrame(tk.Frame):
                     "authority": auth,
                 }
 
-            result = compute_wayside_outputs(
+            result = self._compute_fn(
                 block_state, line["block_lengths"],
                 line["switches"], line["crossings"],
             )
@@ -682,7 +684,7 @@ class WaysideFrame(tk.Frame):
                 "cmd_speed": speed,
                 "authority": auth,
             }
-        result = compute_wayside_outputs(
+        result = self._compute_fn(
             block_state, line["block_lengths"],
             line["switches"], line["crossings"],
         )
@@ -757,21 +759,17 @@ class WaysideApp(tk.Tk):
         WaysideFrame(self).pack(fill="both", expand=True)
 
 
-def launch_as_toplevel(parent):
+def launch_as_toplevel(parent, compute_fn=None, title=None):
     """
     Open the Wayside Controller as a child Toplevel of an existing tkinter app.
-    Call this from the dashboard's 'Default Settings' button.
-
-    Usage:
-        from wayside_controller import launch_as_toplevel
-        launch_as_toplevel(self)   # pass the parent Tk/Toplevel
+    Optionally pass a custom compute_fn to replace the built-in wayside logic.
     """
     win = tk.Toplevel(parent)
-    win.title("Wayside Controller – Green & Red Lines")
+    win.title(title or "Wayside Controller – Green & Red Lines")
     win.geometry("1300x840")
     win.configure(bg=C["bg"])
     win.resizable(True, True)
-    WaysideFrame(win).pack(fill="both", expand=True)
+    WaysideFrame(win, compute_fn=compute_fn).pack(fill="both", expand=True)
     return win
 
 
