@@ -78,7 +78,6 @@ class WaysideDashboard(tk.Tk):
                 'has_crossing': has_crossing,
                 'occupancy': 'Unoccupied',
                 'track_fault': 'No Fault',
-                'maintenance': 'Inactive',
                 'switch_position': 'Position A' if has_switch else 'N/A',
                 'light_color': 'Green' if has_light else 'N/A',
                 'crossing_status': 'Inactive' if has_crossing else 'N/A',
@@ -132,7 +131,6 @@ class WaysideDashboard(tk.Tk):
                 'has_crossing': has_crossing,
                 'occupancy': 'Unoccupied',
                 'track_fault': 'No Fault',
-                'maintenance': 'Inactive',
                 'switch_position': 'Position A' if has_switch else 'N/A',
                 'light_color': 'Green' if has_light else 'N/A',
                 'crossing_status': 'Inactive' if has_crossing else 'N/A',
@@ -144,7 +142,6 @@ class WaysideDashboard(tk.Tk):
         
     def setup_variables(self):
         """Initialize application variables"""
-        self.maintenance_mode = tk.BooleanVar(value=False)
         self.light_color = tk.StringVar(value="Green")
         self.switch_position = tk.StringVar(value="Position A")
         self.crossing_status = tk.StringVar(value="Inactive")
@@ -244,47 +241,6 @@ class WaysideDashboard(tk.Tk):
         controls_frame = tk.LabelFrame(parent, text="", bg="white", relief=tk.RAISED, 
                                       borderwidth=2, padx=15, pady=15)
         controls_frame.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
-        
-        # Maintenance mode toggle
-        maintenance_frame = tk.Frame(controls_frame, bg="white")
-        maintenance_frame.pack(anchor="w", pady=5)
-        
-        tk.Label(maintenance_frame, text="Maintenance mode", bg="white", 
-            font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        
-        # Toggle switch with ON/OFF text
-        self.toggle_btn = tk.Checkbutton(maintenance_frame, variable=self.maintenance_mode,
-                       bg="lightgray", activebackground="lightgray",
-                       selectcolor="lightgreen", width=6, indicatoron=False,
-                       text="OFF", relief=tk.RAISED, borderwidth=2,
-                       command=self.on_maintenance_toggle)
-        self.toggle_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Block selection section (initially hidden)
-        self.block_selection_frame = tk.Frame(controls_frame, bg="white")
-        
-        # Line selection
-        line_frame = tk.Frame(self.block_selection_frame, bg="white")
-        line_frame.pack(anchor="w", pady=5)
-        
-        tk.Label(line_frame, text="Line:", bg="white", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        
-        self.line_dropdown = ttk.Combobox(line_frame, textvariable=self.selected_line,
-                                         values=["Select Line", "Green Line", "Red Line"],
-                                         width=12, state="readonly")
-        self.line_dropdown.pack(side=tk.LEFT, padx=5)
-        self.line_dropdown.bind('<<ComboboxSelected>>', self.on_line_selected)
-        
-        # Block selection
-        block_frame = tk.Frame(self.block_selection_frame, bg="white")
-        block_frame.pack(anchor="w", pady=5)
-        
-        tk.Label(block_frame, text="Block:", bg="white", font=("Arial", 10)).pack(side=tk.LEFT, padx=5)
-        
-        self.block_dropdown = ttk.Combobox(block_frame, textvariable=self.selected_block,
-                                          width=12, state="disabled")
-        self.block_dropdown.pack(side=tk.LEFT, padx=5)
-        self.block_dropdown.bind('<<ComboboxSelected>>', self.on_block_selected)
         
         # Separator
         ttk.Separator(controls_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=10)
@@ -412,26 +368,6 @@ Crossing states (bool) = [Value]"""
         parent.columnconfigure(1, weight=1)
     
     # ============ Event Handlers ============
-    
-    def on_maintenance_toggle(self):
-        """Handle maintenance mode toggle"""
-        if self.maintenance_mode.get():
-            self.toggle_btn.config(text="ON")
-            # Show block selection
-            self.block_selection_frame.pack(anchor="w", pady=10, before=self.lights_frame.master.children['!separator'])
-        else:
-            self.toggle_btn.config(text="OFF")
-            # Hide block selection and controls
-            self.block_selection_frame.pack_forget()
-            self.lights_frame.pack_forget()
-            self.switch_frame.pack_forget()
-            self.crossing_frame.pack_forget()
-            
-            # Reset selections
-            self.selected_line.set("Select Line")
-            self.selected_block.set("Select Block")
-            self.block_dropdown['state'] = 'disabled'
-            self.update_info_display(None)
     
     def on_line_selected(self, event=None):
         """Handle line selection"""
