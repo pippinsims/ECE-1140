@@ -1,1472 +1,1081 @@
-
-#COMPLETE TRAIN CONTROLLER SYSTEM WITH TEST UI
-
-
-
-import os
+import os, sys, math, time
 os.environ['TK_SILENCE_DEPRECATION'] = '1'
-
 import tkinter as tk
-from tkinter import ttk
-import math
+from tkinter import ttk, font as tkfont
 
 
+#  COLOR PALETTE  –  Red & Black Industrial
 
-# TRAIN CONTROLLER LOGIC (The Brain)
+C = {
+    "bg_dark":    "#0d0d0d",   # main background
+    "bg_panel":   "#1a1a1a",   # panel background
+    "bg_card":    "#222222",   # card / inner box
+    "bg_header":  "#1a0000",   # header strip
+    "accent":     "#cc0000",   # primary red
+    "accent2":    "#ff3333",   # bright red (hover / active)
+    "accent_dim": "#660000",   # dim red
+    "ok":         "#00cc44",   # green for good states
+    "warn":       "#ff8800",   # orange warning
+    "fault":      "#ff2222",   # fault red (bright)
+    "text":       "#f0f0f0",   # primary text
+    "text_dim":   "#888888",   # secondary text
+    "text_lcd":   "#ff4444",   # lcd-style value color
+    "border":     "#3a0000",   # panel border
+    "select":     "#cc0000",   # selected button
+    "deselect":   "#2a2a2a",   # unselected button
+    "train_sel":  "#3a0a0a",   # selected train tab
+}
+
+
+#  TRAIN CONTROLLER LOGIC
 
 
 class TrainController:
-    
-    
-    def __init__(self):
-        #  VITAL PARAMETERS 
-        # Speed and Authority
-        self.current_speed = 0.0  # mph
-        self.commanded_speed = 0.0  # mph
-        self.speed_limit = 30.0  # mph
-        self.authority = 0.0  # meters (distance allowed to travel)
-        
-        # Power Control (PI Controller)
-        self.kp = 10.0  # Proportional gain
-        self.ki = 8000.0  # Integral gain
-        self.power_output = 0.0  # Watts (max 120,000W)
-        self.uk = 0.0  # Integral term accumulator
-        self.prev_error = 0.0  # Previous velocity error
-        self.prev_uk = 0.0  # Previous integral term
-        
-        # Braking
-        self.emergency_brake_active = False
-        self.service_brake_active = False
-        
-        # Safety Limits
-        self.MAX_POWER = 120000  # Watts
-        self.SERVICE_BRAKE_DECEL = 1.2  # m/s^2
-        self.EMERGENCY_BRAKE_DECEL = 2.73  # m/s^2
-        
-        #  FAILURE MODES 
-        self.power_failure = False
-        self.brake_failure = False
-        self.signal_pickup_failure = False
-        
-        #  OPERATION MODE 
-        self.automatic_mode = True  # True = Auto, False = Manual
-        
-        #  NON-VITAL PARAMETERS 
-        self.doors_state = 0  # 0=closed, 1=right, 2=left, 3=both
-        self.headlights_on = False
-        self.interior_lights = 0  # 0=off, 1=on, 2=dimmed
-        self.cabin_temperature = 70
-        self.passengers = 0
-        self.next_station = "YARD"
-        self.announcement = ""
-        
-        # Driver Input
-        self.driver_power_request = 0  # 0-100%
-        self.manual_speed_setpoint = 0  # For manual mode
-        
-        # Timing
-        self.prev_time = 0
-    
-    
-    
-    # VITAL FUNCTIONS - Speed and Authority Control
-    
-    
-    def calculate_stopping_distance(self, deceleration):
-        
-        velocity_ms = self.current_speed * 0.44704  # mph to m/s
-        reaction_distance = velocity_ms * 0.1  # Reaction time buffer
-        
-        if deceleration > 0:
-            stopping_distance = (velocity_ms ** 2) / (2 * deceleration)
-        else:
-            stopping_distance = 0
-        
-        return stopping_distance + reaction_distance
-    
-    def monitor_speed_and_authority(self):
-        
-        # Calculate stopping distances
-        service_stop_dist = self.calculate_stopping_distance(self.SERVICE_BRAKE_DECEL)
-        emergency_stop_dist = self.calculate_stopping_distance(self.EMERGENCY_BRAKE_DECEL)
-        
-        # CRITICAL: Emergency brake if we can't stop in time
-        if self.authority <= emergency_stop_dist and self.authority >= 5:
-            self.activate_emergency_brake()
-            return
-        
-        # Service brake if approaching authority limit
-        if self.authority <= service_stop_dist or (self.authority < 0 and self.current_speed > 0):
-            self.service_brake_active = True
-            self.driver_power_request = 0
-            return
-        
-        # VITAL: Enforce speed limit (ALWAYS, regardless of mode)
+    def __init__(self, train_id=1):
+        self.train_id             = train_id
+        self.current_speed        = 0.0    # mph
+        self.commanded_speed      = 0.0    # mph
+        self.speed_limit          = 30.0   # mph
+        self.authority            = 500.0  # meters
+        self.kp                   = 10.0
+        self.ki                   = 8000.0
+        self.power_output         = 0.0    # Watts
+        self.uk                   = 0.0
+        self.prev_error           = 0.0
+        self.prev_uk              = 0.0
+        self.emergency_brake      = False
+        self.service_brake        = False
+        self.MAX_POWER            = 120_000
+        self.SERVICE_DECEL        = 1.2
+        self.EMERGENCY_DECEL      = 2.73
+        self.fault_power          = False
+        self.fault_brake          = False
+        self.fault_signal         = False
+        self.automatic_mode       = True
+        self.doors_state          = 0      # 0=closed,1=right,2=left,3=both
+        self.headlights           = False
+        self.interior_lights      = 0
+        self.cabin_temp           = 70
+        self.passengers           = 0
+        self.next_station         = "YARD"
+        self.driver_power_req     = 0
+        self.manual_speed_target  = 0.0
+
+  
+
+    def _stop_dist(self, decel):
+        v = self.current_speed * 0.44704
+        return (v**2 / (2*decel) + v*0.1) if decel > 0 else 0.0
+
+    def monitor(self):
+        svc = self._stop_dist(self.SERVICE_DECEL)
+        emg = self._stop_dist(self.EMERGENCY_DECEL)
+
+        if 5 <= self.authority <= emg:
+            self._activate_ebrake(); return
+        if self.authority <= svc or (self.authority < 0 and self.current_speed > 0):
+            self.service_brake = True; self.driver_power_req = 0; return
         if self.current_speed > self.speed_limit:
-            self.service_brake_active = True
-            self.driver_power_request = 0
-            return
-        
-        # VITAL: Don't exceed commanded speed
+            self.service_brake = True; self.driver_power_req = 0; return
         if self.current_speed > self.commanded_speed:
-            self.service_brake_active = True
-            self.driver_power_request = 0
-            return
-        
-        # In automatic mode, regulate to commanded speed
+            self.service_brake = True; self.driver_power_req = 0; return
+
         if self.automatic_mode:
             if self.current_speed < self.commanded_speed and self.current_speed < self.speed_limit:
-                # Adjust power based on authority remaining
-                if self.authority <= 50:
-                    self.driver_power_request = 25
-                elif self.authority > 60:
-                    self.driver_power_request = 100
-                else:
-                    self.driver_power_request = 50
-                self.service_brake_active = False
-            elif self.current_speed >= self.commanded_speed or self.current_speed >= self.speed_limit:
-                self.driver_power_request = 0
-                self.service_brake_active = False
-    
-    def calculate_power_command(self, dt_seconds):
-        
-        # If any brake is active, no power
-        if self.emergency_brake_active or self.service_brake_active:
-            self.power_output = 0
-            self.uk = 0  # Reset integral term
-            return 0
-        
-        # If driver requests no power
-        if self.driver_power_request == 0:
-            self.power_output = 0
-            return 0
-        
-        # Calculate velocity error (convert mph to m/s)
-        if self.automatic_mode:
-            cmd_velocity_ms = self.commanded_speed * 0.44704
-        else:
-            # In manual mode, use manual setpoint
-            cmd_velocity_ms = self.manual_speed_setpoint * 0.44704
-        
-        cur_velocity_ms = self.current_speed * 0.44704
-        error = cmd_velocity_ms - cur_velocity_ms
-        
-        # PI Control with trapezoidal integration
-        self.uk = self.prev_uk + (dt_seconds / 2) * (error + self.prev_error)
-        
-        # Calculate power: P = Kp * e + Ki * uk
-        power_calc = (self.kp * error + self.ki * self.uk) * (self.driver_power_request / 100.0)
-        
-        # Save for next iteration
-        self.prev_error = error
-        self.prev_uk = self.uk
-        
-        # Apply power limits
-        if power_calc > self.MAX_POWER:
-            power_calc = self.MAX_POWER
-        elif power_calc < 0:
-            power_calc = 0
-        
-        self.power_output = power_calc
-        return power_calc
-    
-    def update_authority_by_distance(self, dt_seconds):
-        
+                self.driver_power_req = (25 if self.authority<=50 else 50 if self.authority<=60 else 100)
+                self.service_brake = False
+            else:
+                self.driver_power_req = 0; self.service_brake = False
+
+    def calc_power(self, dt):
+        if self.emergency_brake or self.service_brake:
+            self.power_output = 0; self.uk = 0; return 0.0
+        if self.driver_power_req == 0:
+            self.power_output = 0; return 0.0
+        cmd_v = (self.commanded_speed if self.automatic_mode else self.manual_speed_target) * 0.44704
+        err   = cmd_v - self.current_speed * 0.44704
+        self.uk = self.prev_uk + (dt/2)*(err + self.prev_error)
+        pwr = (self.kp*err + self.ki*self.uk) * (self.driver_power_req/100.0)
+        self.prev_error = err; self.prev_uk = self.uk
+        self.power_output = max(0.0, min(float(self.MAX_POWER), pwr))
+        return self.power_output
+
+    def update_auth(self, dt):
         if self.current_speed > 0:
-            velocity_m_per_ms = self.current_speed * 0.00044704
-            distance_traveled = velocity_m_per_ms * (dt_seconds * 1000)
-            self.authority -= distance_traveled
-    
-    
-   
-    # VITAL FUNCTIONS - Failure Handling
-    
-    
-    def activate_emergency_brake(self):
-       # Activate emergency brake - highest priority safety
-        self.emergency_brake_active = True
-        self.power_output = 0
-        self.driver_power_request = 0
-        self.service_brake_active = False
-        print("EMERGENCY BRAKE ACTIVATED BY SYSTEM!")
-    
-    def release_emergency_brake(self):
-        #Release emergency brake (only if safe)
-        if not (self.power_failure or self.brake_failure or self.signal_pickup_failure):
-            self.emergency_brake_active = False
-            print(" Emergency Brake Released")
-    
-    def handle_power_failure(self, failed):
-        #Response to power system failure
-        self.power_failure = failed
-        if failed:
-            print("POWER FAILURE DETECTED!")
-            self.activate_emergency_brake()
-        else:
-            print(" Power restored")
-    
-    def handle_brake_failure(self, failed):
-        #Response to brake system failure
-        self.brake_failure = failed
-        if failed:
-            print("BRAKE FAILURE DETECTED!")
-            self.activate_emergency_brake()
-        else:
-            print(" Brakes restored")
-    
-    def handle_signal_failure(self, failed):
-        #Response to signal pickup failure
-        self.signal_pickup_failure = failed
-        if failed:
-            print("SIGNAL PICKUP FAILURE DETECTED!")
-            self.activate_emergency_brake()
-        else:
-            print(" Signal restored")
-    
-    
-   
-    # NON-VITAL FUNCTIONS
-   
-    
-    def set_doors(self, door_state):
-       # Control doors (only when stopped)
-        if self.current_speed == 0:
-            self.doors_state = door_state
-            print(f"Doors: {door_state}")
-        else:
-            print("Cannot open doors while moving!")
-    
-    def set_lights(self, light_mode):
-        #Control lights
-        if light_mode == "Off":
-            self.headlights_on = False
-            self.interior_lights = 0
-        elif light_mode == "External":
-            self.headlights_on = True
-            self.interior_lights = 0
-        elif light_mode == "Internal":
-            self.headlights_on = False
-            self.interior_lights = 1
-        print(f"Lights: {light_mode}")
-    
-    
-    
-    # MODE CONTROL
-    
-    
-    def set_automatic_mode(self):
-       # Switch to automatic mode
-        self.automatic_mode = True
-        print(" Automatic Mode Activated")
-    
-    def set_manual_mode(self, manual_speed):
-        #Switch to manual mode with speed setpoint
-        self.automatic_mode = False
-        self.manual_speed_setpoint = manual_speed
-        self.driver_power_request = 50
-        print(f" Manual Mode Activated - Target Speed: {manual_speed} mph")
-    
-    
-    
-    # MAIN UPDATE LOOP
-    
-    
-    def update(self, dt_seconds):
-       # Main update function - called every simulation cycle
-        self.monitor_speed_and_authority()
-        power = self.calculate_power_command(dt_seconds)
-        self.update_authority_by_distance(dt_seconds)
-        
-        return {
-            'power': power,
-            'service_brake': self.service_brake_active,
-            'emergency_brake': self.emergency_brake_active
-        }
+            self.authority -= self.current_speed * 0.00044704 * dt * 1000
+
+    def update(self, dt):
+        self.monitor(); self.calc_power(dt); self.update_auth(dt)
+
+    #  failures 
+
+    def _activate_ebrake(self):
+        self.emergency_brake = True; self.power_output = 0
+        self.driver_power_req = 0; self.service_brake = False
+
+    def release_ebrake(self):
+        if not (self.fault_power or self.fault_brake or self.fault_signal):
+            self.emergency_brake = False
+
+    def set_power_fault(self, v):
+        self.fault_power = v
+        if v: self._activate_ebrake()
+
+    def set_brake_fault(self, v):
+        self.fault_brake = v
+        if v: self._activate_ebrake()
+
+    def set_signal_fault(self, v):
+        self.fault_signal = v
+        if v: self._activate_ebrake()
+
+    #  non-vital 
+
+    def set_doors(self, s):
+        if self.current_speed == 0: self.doors_state = s
+
+    def set_lights(self, mode):
+        if   mode == "Off":      self.headlights = False; self.interior_lights = 0
+        elif mode == "External": self.headlights = True;  self.interior_lights = 0
+        elif mode == "Internal": self.headlights = False; self.interior_lights = 1
+
+    def set_auto(self): self.automatic_mode = True
+    def set_manual(self, spd):
+        self.automatic_mode = False; self.manual_speed_target = spd; self.driver_power_req = 50
+
+    @property
+    def any_fault(self): return self.fault_power or self.fault_brake or self.fault_signal
 
 
 
-# TEST UI - Real-time Monitor
+#  UI HELPER WIDGETS
 
 
-class TrainControllerTestUI:
-    #Test UI showing all inputs and outputs in real-time
-    
-    def __init__(self, controller, parent_window):
-        
-       # Initialize Test UI
-        #controller = the TrainController object to monitor
-        #parent_window = the main Tk window
-        
-        self.controller = controller
-        self.edit_mode = False  # False = Live Mode, True = Edit Mode
-        
-        # Create test window
-        self.window = tk.Toplevel(parent_window)
-        self.window.title("Train Controller Test UI - LIVE MODE")
-        self.window.geometry("650x800")
-        self.window.configure(bg='#e0e0e0')
-        
-        self.create_test_ui()
-        self.start_monitoring()
-    
-    def create_test_ui(self):
-        #Create the test UI layout
-        
-        # Title Bar
-        title_bar = tk.Frame(self.window, bg='gray', height=50)
-        title_bar.pack(fill=tk.X)
-        
-        # Title
-        title = tk.Label(title_bar, text="Train Controller Test UI", 
-                        font=('Arial', 16, 'bold'), bg='gray', fg='white')
-        title.pack(side=tk.LEFT, padx=15, pady=10)
-        
-        # Mode Toggle Button
-        self.mode_btn = tk.Button(title_bar, text="Switch to EDIT Mode", 
-                                 command=self.toggle_mode,
-                                 bg='#90EE90', font=('Arial', 11, 'bold'),
-                                 relief=tk.RAISED, bd=3, width=18)
-        self.mode_btn.pack(side=tk.RIGHT, padx=15, pady=10)
-        
-        # Main container
-        main = tk.Frame(self.window, bg='#e0e0e0')
-        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        #  LEFT SIDE: INPUTS 
-        left_frame = tk.LabelFrame(main, text="Inputs", font=('Arial', 13, 'bold'), 
-                                   bg='white', padx=10, pady=10, relief=tk.RIDGE, bd=3)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
-        
-        # Input data structure: (label_text, key_name, editable)
-        input_data = [
-            ("--- From Train Model ---", "header", False),
-            ("Commanded Speed (km/hr)", "cmd_speed_kmh", True),
-            ("Commanded Authority (km)", "cmd_authority_km", True),
-            ("Current Position (km)", "current_pos", False),
-            ("Emergency Brake (bool)", "emergency_brake_in", False),
-            ("Actual Speed (km/hr)", "actual_speed", True),
-            ("Power Fault (bool)", "power_fault", True),
-            ("Engine fault (bool)", "engine_fault", False),
-            ("Brake Fault (bool)", "brake_fault", True),
-            ("Track Power Fault (bool)", "track_power_fault", False),
-            ("Next Station (string)", "next_station", True),
-            ("Passenger count (integer)", "passenger_count", True),
-            ("", "spacer", False),
-            ("--- From Train Engineer ---", "header", False),
-            ("Kp (Double)", "kp_value", True),
-            ("Ki (Double)", "ki_value", True),
-            ("", "spacer", False),
-            ("--- From Driver ---", "header", False),
-            ("Emergency Brake (bool)", "driver_ebrake", False),
-            ("Brake (bool)", "driver_brake", False),
-            ("Door(Left/right) (bool)", "door_state", False),
-            ("Mode (bool)", "mode", False),
-            ("Speed (km/hr)", "driver_speed", False),
-            ("Light(External/Internal) (bool)", "light_state", False),
-        ]
-        
-        self.input_labels = {}
-        self.input_entries = {}  # For edit mode
-        
-        for text, key, editable in input_data:
-            if key == "header":
-                # Section header
-                tk.Label(left_frame, text=text, font=('Arial', 9, 'bold'), 
-                        bg='#c0c0c0', anchor='w', padx=5, relief=tk.RAISED).pack(fill=tk.X, pady=(8, 2))
-            elif key == "spacer":
-                # Blank space
-                tk.Frame(left_frame, height=3, bg='white').pack()
-            else:
-                # Data row
-                row = tk.Frame(left_frame, bg='white')
-                row.pack(fill=tk.X, pady=1)
-                
-                tk.Label(row, text=text, font=('Arial', 8), bg='white', 
-                        anchor='w', width=28).pack(side=tk.LEFT, padx=3)
-                
-                # Value label (for Live mode)
-                value_label = tk.Label(row, text="[0]", font=('Arial', 8, 'bold'), 
-                                      bg='#ffffcc', fg='black', width=14, 
-                                      relief=tk.SUNKEN, bd=1)
-                value_label.pack(side=tk.RIGHT, padx=3)
-                self.input_labels[key] = value_label
-                
-                # Entry box (for Edit mode - hidden initially)
-                if editable:
-                    value_entry = tk.Entry(row, font=('Arial', 8), width=14,
-                                          bg='white', fg='black', insertbackground='black',
-                                          relief=tk.SUNKEN, bd=1, justify='center')
-                    self.input_entries[key] = (value_entry, editable)
-        
-        #  RIGHT SIDE: OUTPUTS 
-        right_frame = tk.LabelFrame(main, text="Outputs", font=('Arial', 13, 'bold'), 
-                                    bg='white', padx=10, pady=10, relief=tk.RIDGE, bd=3)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
-        
-        # Output data structure
-        output_data = [
-            ("--- To Driver ---", "header"),
-            ("Speed Display (km/hr)", "speed_display"),
-            ("Authority Display (km)", "authority_display_km"),
-            ("Authority Display (m)", "authority_display_m"),
-            ("Next station", "next_station_out"),
-            ("", "spacer"),
-            ("--- To Train Model ---", "header"),
-            ("Velocity Command (km/hr)", "velocity_cmd"),
-            ("Door (Left/right) (bool)", "door_output"),
-            ("Lights (External/Internal) (bool)", "lights_output"),
-            ("Emergency Brake (bool)", "ebrake_output"),
-            ("Temperature (F)", "temp_output"),
-            ("Brake (bool)", "brake_output"),
-        ]
-        
-        self.output_labels = {}
-        
-        for text, key in output_data:
-            if key == "header":
-                tk.Label(right_frame, text=text, font=('Arial', 9, 'bold'), 
-                        bg='#c0c0c0', anchor='w', padx=5, relief=tk.RAISED).pack(fill=tk.X, pady=(8, 2))
-            elif key == "spacer":
-                tk.Frame(right_frame, height=3, bg='white').pack()
-            else:
-                row = tk.Frame(right_frame, bg='white')
-                row.pack(fill=tk.X, pady=1)
-                
-                tk.Label(row, text=text, font=('Arial', 8), bg='white', 
-                        anchor='w', width=28).pack(side=tk.LEFT, padx=3)
-                
-                value_label = tk.Label(row, text="[0]", font=('Arial', 8, 'bold'), 
-                                      bg='#ccffcc', fg='black', width=14, 
-                                      relief=tk.SUNKEN, bd=1)
-                value_label.pack(side=tk.RIGHT, padx=3)
-                
-                self.output_labels[key] = value_label
-        
-        # Apply/Revert buttons (for Edit mode - hidden initially)
-        self.edit_buttons_frame = tk.Frame(self.window, bg='#e0e0e0')
-        
-        tk.Button(self.edit_buttons_frame, text="✓ Apply Changes", 
-                 command=self.apply_changes, bg='#90EE90', 
-                 font=('Arial', 12, 'bold'), width=20).pack(side=tk.LEFT, padx=10)
-        
-        tk.Button(self.edit_buttons_frame, text="✗ Revert Changes", 
-                 command=self.revert_changes, bg='#ffcccc', 
-                 font=('Arial', 12, 'bold'), width=20).pack(side=tk.LEFT, padx=10)
-    
-    def toggle_mode(self):
-        #Toggle between Live and Edit modes
-        self.edit_mode = not self.edit_mode
-        
-        if self.edit_mode:
-            # Switch to EDIT MODE
-            self.window.title("Train Controller Test UI - EDIT MODE")
-            self.mode_btn.config(text="Switch to LIVE Mode", bg='#ffcccc')
-            
-            # Show entry boxes, hide labels
-            for key, (entry, editable) in self.input_entries.items():
-                if editable and key in self.input_labels:
-                    # Hide label
-                    self.input_labels[key].pack_forget()
-                    # Show entry with current value
-                    current_text = self.input_labels[key].cget('text')
-                    entry.delete(0, tk.END)
-                    entry.insert(0, current_text.strip('[]'))
-                    entry.pack(side=tk.RIGHT, padx=3)
-            
-            # Show Apply/Revert buttons
-            self.edit_buttons_frame.pack(pady=10)
-            
-            print("EDIT MODE: You can now modify values")
-            
-        else:
-            # Switch to LIVE MODE
-            self.window.title("Train Controller Test UI - LIVE MODE")
-            self.mode_btn.config(text="Switch to EDIT Mode", bg='#90EE90')
-            
-            # Show labels, hide entry boxes
-            for key, (entry, editable) in self.input_entries.items():
-                entry.pack_forget()
-                if key in self.input_labels:
-                    self.input_labels[key].pack(side=tk.RIGHT, padx=3)
-            
-            # Hide Apply/Revert buttons
-            self.edit_buttons_frame.pack_forget()
-            
-            print("LIVE MODE: Monitoring values in real-time")
-    
-    def apply_changes(self):
-        #Apply changes from Edit mode to controller
-        try:
-            # Apply Commanded Speed
-            if 'cmd_speed_kmh' in self.input_entries:
-                entry, _ = self.input_entries['cmd_speed_kmh']
-                speed_kmh = float(entry.get())
-                self.controller.commanded_speed = speed_kmh / 1.60934  # Convert back to mph
-                print(f" Commanded Speed: {self.controller.commanded_speed:.1f} mph")
-            
-            # Apply Authority
-            if 'cmd_authority_km' in self.input_entries:
-                entry, _ = self.input_entries['cmd_authority_km']
-                auth_km = float(entry.get())
-                self.controller.authority = auth_km * 1000  # Convert back to meters
-                print(f" Authority: {self.controller.authority:.0f} meters")
-            
-            # Apply Actual Speed
-            if 'actual_speed' in self.input_entries:
-                entry, _ = self.input_entries['actual_speed']
-                speed_kmh = float(entry.get())
-                self.controller.current_speed = speed_kmh / 1.60934  # Convert to mph
-                print(f" Current Speed: {self.controller.current_speed:.1f} mph")
-            
-            # Apply Kp
-            if 'kp_value' in self.input_entries:
-                entry, _ = self.input_entries['kp_value']
-                self.controller.kp = float(entry.get())
-                print(f" Kp: {self.controller.kp}")
-            
-            # Apply Ki
-            if 'ki_value' in self.input_entries:
-                entry, _ = self.input_entries['ki_value']
-                self.controller.ki = float(entry.get())
-                print(f" Ki: {self.controller.ki}")
-            
-            # Apply Passengers
-            if 'passenger_count' in self.input_entries:
-                entry, _ = self.input_entries['passenger_count']
-                self.controller.passengers = int(entry.get())
-                print(f" Passengers: {self.controller.passengers}")
-            
-            # Apply Next Station
-            if 'next_station' in self.input_entries:
-                entry, _ = self.input_entries['next_station']
-                self.controller.next_station = entry.get()
-                print(f" Next Station: {self.controller.next_station}")
-            
-            # Apply Power Fault
-            if 'power_fault' in self.input_entries:
-                entry, _ = self.input_entries['power_fault']
-                value = entry.get().lower()
-                if value in ['true', '1', 'yes']:
-                    self.controller.handle_power_failure(True)
-                else:
-                    self.controller.handle_power_failure(False)
-            
-            # Apply Brake Fault
-            if 'brake_fault' in self.input_entries:
-                entry, _ = self.input_entries['brake_fault']
-                value = entry.get().lower()
-                if value in ['true', '1', 'yes']:
-                    self.controller.handle_brake_failure(True)
-                else:
-                    self.controller.handle_brake_failure(False)
-            
-            print("All changes applied!")
-            
-        except ValueError as e:
-            print(f" Error applying changes: {e}")
-            print(" Some values may be invalid. Check your inputs.")
-    
-    def revert_changes(self):
-        #Revert all changes - reload from controller
-        print("Changes reverted - showing current values")
-        # Just update the display - it will reload from controller
-        self.update_values()
-        
-        # Main container
-        main = tk.Frame(self.window, bg='#e0e0e0')
-        main.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        #  LEFT SIDE: INPUTS 
-        left_frame = tk.LabelFrame(main, text="Inputs", font=('Arial', 13, 'bold'), 
-                                   bg='white', padx=10, pady=10, relief=tk.RIDGE, bd=3)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
-        
-        # Input data structure: (label_text, key_name)
-        input_data = [
-            ("--- From Train Model ---", "header"),
-            ("Commanded Speed (km/hr)", "cmd_speed_kmh"),
-            ("Commanded Authority (km)", "cmd_authority_km"),
-            ("Current Position (km)", "current_pos"),
-            ("Emergency Brake (bool)", "emergency_brake_in"),
-            ("Actual Speed (km/hr)", "actual_speed"),
-            ("Power Fault (bool)", "power_fault"),
-            ("Engine fault (bool)", "engine_fault"),
-            ("Brake Fault (bool)", "brake_fault"),
-            ("Track Power Fault (bool)", "track_power_fault"),
-            ("Next Station (string)", "next_station"),
-            ("Passenger count (integer)", "passenger_count"),
-            ("", "spacer"),
-            ("--- From Train Engineer ---", "header"),
-            ("Kp (Double)", "kp_value"),
-            ("Ki (Double)", "ki_value"),
-            ("", "spacer"),
-            ("--- From Driver ---", "header"),
-            ("Emergency Brake (bool)", "driver_ebrake"),
-            ("Brake (bool)", "driver_brake"),
-            ("Door(Left/right) (bool)", "door_state"),
-            ("Mode (bool)", "mode"),
-            ("Speed (km/hr)", "driver_speed"),
-            ("Light(External/Internal) (bool)", "light_state"),
-        ]
-        
-        self.input_labels = {}
-        
-        for text, key in input_data:
-            if key == "header":
-                # Section header
-                tk.Label(left_frame, text=text, font=('Arial', 9, 'bold'), 
-                        bg='#c0c0c0', anchor='w', padx=5, relief=tk.RAISED).pack(fill=tk.X, pady=(8, 2))
-            elif key == "spacer":
-                # Blank space
-                tk.Frame(left_frame, height=3, bg='white').pack()
-            else:
-                # Data row
-                row = tk.Frame(left_frame, bg='white')
-                row.pack(fill=tk.X, pady=1)
-                
-                tk.Label(row, text=text, font=('Arial', 8), bg='white', 
-                        anchor='w', width=28).pack(side=tk.LEFT, padx=3)
-                
-                value_label = tk.Label(row, text="[0]", font=('Arial', 8, 'bold'), 
-                                      bg='#ffffcc', fg='black', width=14, 
-                                      relief=tk.SUNKEN, bd=1)
-                value_label.pack(side=tk.RIGHT, padx=3)
-                
-                self.input_labels[key] = value_label
-        
-        #  RIGHT SIDE: OUTPUTS 
-        right_frame = tk.LabelFrame(main, text="Outputs", font=('Arial', 13, 'bold'), 
-                                    bg='white', padx=10, pady=10, relief=tk.RIDGE, bd=3)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5, 0))
-        
-        # Output data structure
-        output_data = [
-            ("--- To Driver ---", "header"),
-            ("Speed Display (km/hr)", "speed_display"),
-            ("Authority Display (km)", "authority_display_km"),
-            ("Authority Display (m)", "authority_display_m"),
-            ("Next station", "next_station_out"),
-            ("", "spacer"),
-            ("--- To Train Model ---", "header"),
-            ("Velocity Command (km/hr)", "velocity_cmd"),
-            ("Door (Left/right) (bool)", "door_output"),
-            ("Lights (External/Internal) (bool)", "lights_output"),
-            ("Emergency Brake (bool)", "ebrake_output"),
-            ("Temperature (F)", "temp_output"),
-            ("Brake (bool)", "brake_output"),
-        ]
-        
-        self.output_labels = {}
-        
-        for text, key in output_data:
-            if key == "header":
-                tk.Label(right_frame, text=text, font=('Arial', 9, 'bold'), 
-                        bg='#c0c0c0', anchor='w', padx=5, relief=tk.RAISED).pack(fill=tk.X, pady=(8, 2))
-            elif key == "spacer":
-                tk.Frame(right_frame, height=3, bg='white').pack()
-            else:
-                row = tk.Frame(right_frame, bg='white')
-                row.pack(fill=tk.X, pady=1)
-                
-                tk.Label(row, text=text, font=('Arial', 8), bg='white', 
-                        anchor='w', width=28).pack(side=tk.LEFT, padx=3)
-                
-                value_label = tk.Label(row, text="[0]", font=('Arial', 8, 'bold'), 
-                                      bg='#ccffcc', fg='black', width=14, 
-                                      relief=tk.SUNKEN, bd=1)
-                value_label.pack(side=tk.RIGHT, padx=3)
-                
-                self.output_labels[key] = value_label
-    
-    def start_monitoring(self):
-        #Start monitoring and updating values
-        self.update_values()
-    
-    def update_values(self):
-        #Update all displayed values from controller
-        
-        try:
-            #  UPDATE INPUTS 
-            
-            # From Train Model
-            self.input_labels['cmd_speed_kmh'].config(
-                text=f"[{self.controller.commanded_speed * 1.60934:.1f}]")
-            
-            self.input_labels['cmd_authority_km'].config(
-                text=f"[{self.controller.authority / 1000:.3f}]")
-            
-            self.input_labels['current_pos'].config(text="[0]")
-            
-            self.input_labels['emergency_brake_in'].config(
-                text=f"[{str(self.controller.emergency_brake_active)}]")
-            
-            self.input_labels['actual_speed'].config(
-                text=f"[{self.controller.current_speed * 1.60934:.1f}]")
-            
-            self.input_labels['power_fault'].config(
-                text=f"[{str(self.controller.power_failure)}]")
-            
-            self.input_labels['engine_fault'].config(text="[False]")
-            
-            self.input_labels['brake_fault'].config(
-                text=f"[{str(self.controller.brake_failure)}]")
-            
-            self.input_labels['track_power_fault'].config(text="[False]")
-            
-            self.input_labels['next_station'].config(
-                text=f"[{self.controller.next_station}]")
-            
-            self.input_labels['passenger_count'].config(
-                text=f"[{self.controller.passengers}]")
-            
-            # From Train Engineer
-            self.input_labels['kp_value'].config(
-                text=f"[{self.controller.kp:.1f}]")
-            
-            self.input_labels['ki_value'].config(
-                text=f"[{self.controller.ki:.1f}]")
-            
-            # From Driver
-            self.input_labels['driver_ebrake'].config(
-                text=f"[{str(self.controller.emergency_brake_active)}]")
-            
-            self.input_labels['driver_brake'].config(
-                text=f"[{str(self.controller.service_brake_active)}]")
-            
-            # Door state
-            door_states = {0: "[Closed]", 1: "[Right]", 2: "[Left]", 3: "[Both]"}
-            self.input_labels['door_state'].config(
-                text=door_states.get(self.controller.doors_state, "[Closed]"))
-            
-            # Mode
-            mode_text = "[manual]" if not self.controller.automatic_mode else "[auto]"
-            self.input_labels['mode'].config(text=mode_text)
-            
-            # Driver speed
-            self.input_labels['driver_speed'].config(
-                text=f"[{self.controller.manual_speed_setpoint * 1.60934:.0f}]")
-            
-            # Light state
-            light_text = "[Off]"
-            if self.controller.headlights_on:
-                light_text = "[External]"
-            elif self.controller.interior_lights > 0:
-                light_text = "[Internal]"
-            self.input_labels['light_state'].config(text=light_text)
-            
-            #  UPDATE OUTPUTS 
-            
-            # To Driver
-            self.output_labels['speed_display'].config(
-                text=f"[{self.controller.current_speed * 1.60934:.0f}]")
-            
-            self.output_labels['authority_display_km'].config(
-                text=f"[{self.controller.authority / 1000:.2f}]")
-            
-            self.output_labels['authority_display_m'].config(
-                text=f"[{self.controller.authority:.0f}]")
-            
-            self.output_labels['next_station_out'].config(
-                text=f"[{self.controller.next_station}]")
-            
-            # To Train Model
-            self.output_labels['velocity_cmd'].config(
-                text=f"[{self.controller.commanded_speed * 1.60934:.1f}]")
-            
-            self.output_labels['door_output'].config(
-                text=door_states.get(self.controller.doors_state, "[Closed]"))
-            
-            self.output_labels['lights_output'].config(text=light_text)
-            
-            self.output_labels['ebrake_output'].config(
-                text=f"[{str(self.controller.emergency_brake_active)}]")
-            
-            self.output_labels['temp_output'].config(
-                text=f"[{self.controller.cabin_temperature}]")
-            
-            self.output_labels['brake_output'].config(
-                text=f"[{str(self.controller.service_brake_active)}]")
-            
-        except:
-            pass  # Ignore errors if window is closing
-        
-        # Schedule next update (100ms)
-        try:
-            self.window.after(100, self.update_values)
-        except:
-            pass
-    
-    def show(self):
-        #Show the test window
-        self.window.deiconify()
-    
-    def hide(self):
-        #"""Hide the test window
-        self.window.withdraw()
+def sep(parent, color=C["border"], pady=4):
+    f = tk.Frame(parent, bg=color, height=1)
+    f.pack(fill=tk.X, pady=pady)
+
+def card(parent, title="", bg=C["bg_card"], pad=10):
+    outer = tk.Frame(parent, bg=C["border"], bd=0)
+    outer.pack(fill=tk.X, pady=4, padx=2)
+    if title:
+        th = tk.Frame(outer, bg=C["accent_dim"])
+        th.pack(fill=tk.X)
+        tk.Label(th, text=f"  {title.upper()}", bg=C["accent_dim"],
+                 fg=C["text"], font=("Courier", 9, "bold"), anchor="w",
+                 pady=3).pack(fill=tk.X)
+    inner = tk.Frame(outer, bg=bg, padx=pad, pady=pad)
+    inner.pack(fill=tk.X)
+    return inner
+
+def lcd_label(parent, width=12, font_size=20):
+    """Red LCD-style value display."""
+    lbl = tk.Label(parent, text="0", bg="#0a0000", fg=C["text_lcd"],
+                   font=("Courier", font_size, "bold"),
+                   width=width, anchor="e", padx=8, pady=4,
+                   relief=tk.FLAT, bd=0)
+    return lbl
+
+def section_title(parent, text):
+    f = tk.Frame(parent, bg=C["bg_panel"])
+    f.pack(fill=tk.X, pady=(10, 2))
+    tk.Frame(f, bg=C["accent"], width=4).pack(side=tk.LEFT, fill=tk.Y)
+    tk.Label(f, text=f"  {text}", bg=C["bg_panel"], fg=C["accent2"],
+             font=("Courier", 11, "bold")).pack(side=tk.LEFT, pady=4)
+
+
+def pill_button(parent, text, command, color=C["accent"], fg="white",
+                width=10, font_size=11):
+    btn = tk.Button(parent, text=text, command=command,
+                    bg=color, fg=fg, activebackground=C["accent2"],
+                    activeforeground="white",
+                    font=("Courier", font_size, "bold"),
+                    relief=tk.FLAT, bd=0, padx=10, pady=6,
+                    cursor="hand2", width=width)
+    return btn
+
+
+def toggle_group(parent, options, command, bg_sel=C["accent"],
+                 bg_desel=C["deselect"], font_size=10):
+    """Radio-style toggle button group. Returns (frame, var, buttons_dict)."""
+    var  = tk.StringVar(value=options[0][1])
+    btns = {}
+    frm  = tk.Frame(parent, bg=C["bg_card"])
+
+    def _click(val):
+        var.set(val)
+        for v, b in btns.items():
+            b.config(bg=bg_sel if v==val else bg_desel,
+                     fg="white" if v==val else C["text_dim"])
+        command(val)
+
+    for txt, val in options:
+        b = tk.Button(frm, text=txt,
+                      bg=bg_sel if val==options[0][1] else bg_desel,
+                      fg="white" if val==options[0][1] else C["text_dim"],
+                      font=("Courier", font_size, "bold"),
+                      relief=tk.FLAT, bd=0, padx=8, pady=5,
+                      cursor="hand2",
+                      command=lambda v=val: _click(v))
+        b.pack(side=tk.LEFT, padx=2)
+        btns[val] = b
+    return frm, var, btns
+
+
+def fault_badge(parent, text):
+    lbl = tk.Label(parent, text=f"● {text}", bg=C["bg_card"],
+                   fg=C["text_dim"], font=("Courier", 11, "bold"),
+                   padx=8, pady=4)
+    return lbl
 
 
 
-# USER INTERFACE (Tkinter GUI)
+#  MAIN APPLICATION
 
 
-class TrainControllerUI:
-    #Complete User Interface with Controller Integration
-    
+class TrainControllerApp:
+
+    NUM_TRAINS = 3
+
     def __init__(self):
-        # Create the controller
-        self.controller = TrainController()
-        
-        # Main window
+        # Create 3 independent controllers
+        self.trains   = [TrainController(i+1) for i in range(self.NUM_TRAINS)]
+        self.active   = 0          # index of currently viewed train
+        self.sim_running = False
+
+        # Pre-set demo data so UI looks alive on launch
+        self.trains[0].commanded_speed = 30; self.trains[0].passengers = 42
+        self.trains[0].next_station    = "CENTRAL"
+        self.trains[1].commanded_speed = 25; self.trains[1].passengers = 18
+        self.trains[1].next_station    = "OVERBROOK"; self.trains[1].authority = 1200
+        self.trains[2].commanded_speed = 0;  self.trains[2].passengers = 0
+        self.trains[2].next_station    = "YARD"; self.trains[2].authority = 0
+
+        self._build_root()
+        self._build_header()
+        self._build_body()
+        self._build_status_bar()
+        self._refresh_all()
+
+    #  root window 
+
+    def _build_root(self):
         self.root = tk.Tk()
-        self.root.title("Train Controller")
-        self.root.geometry("1400x800")
-        self.root.configure(bg='#f0f0f0')
-        
-        self.simulation_running = False
-        self.test_ui = None  # Will hold Test UI when created
-        
-        self.create_ui()
-        self.start_update_loop()
-    
-    def create_ui(self):
-        #Create complete UI
-        
-        #  HEADER 
-        header = tk.Frame(self.root, bg='#808080', height=60)
-        header.pack(fill=tk.X, side=tk.TOP)
-        
-        logo_label = tk.Label(header, text="Logo", font=('Arial', 18, 'bold'), 
-                             bg='#d3d3d3', width=10, relief=tk.RAISED, bd=3)
-        logo_label.pack(side=tk.LEFT, padx=10, pady=10)
-        
-        title_label = tk.Label(header, text="Train Controller", font=('Arial', 22, 'bold'), 
-                              bg='#808080', fg='white')
-        title_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=20)
-        
-        # TEST UI BUTTON in header
-        test_ui_btn = tk.Button(header, text="📊 Open Test UI", 
-                               command=self.open_test_ui, 
-                               bg='#ffffaa', font=('Arial', 12, 'bold'),
-                               relief=tk.RAISED, bd=3, width=15)
-        test_ui_btn.pack(side=tk.RIGHT, padx=10, pady=10)
-        
-        #  MAIN CONTAINER 
-        main_container = tk.Frame(self.root, bg='#f0f0f0')
-        main_container.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
-        
-        #  LEFT SIDE 
-        left_frame = tk.Frame(main_container, bg='#f0f0f0', width=600)
-        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 10))
-        
-        # Driver Inputs Section
-        driver_inputs = tk.LabelFrame(left_frame, text="Driver Inputs Buttons", 
-                                     font=('Arial', 15, 'bold'), bg='white', 
-                                     padx=25, pady=25, relief=tk.RIDGE, bd=3)
-        driver_inputs.pack(fill=tk.BOTH, expand=True)
-        
-        # 1. EMERGENCY BRAKE
-        self.ebrake_btn = tk.Button(
-            driver_inputs,
-            text="Emergency Brake",
-            font=('Arial', 18, 'bold'),
-            bg='#ffb3ba',
-            fg='#8b0000',
-            command=self.on_emergency_brake,
-            height=2,
-            relief=tk.RAISED,
-            bd=4
-        )
-        self.ebrake_btn.pack(fill=tk.X, pady=(0, 15))
-        
-        # 2. BRAKE TOGGLE
-        brake_container = tk.Frame(driver_inputs, bg='#c0c0c0', relief=tk.RAISED, bd=3)
-        brake_container.pack(fill=tk.X, pady=15)
-        
-        tk.Label(brake_container, text="Brake", font=('Arial', 16, 'bold'), 
-                bg='#c0c0c0').pack(side=tk.LEFT, padx=20, pady=15)
-        
-        self.brake_var = tk.IntVar(value=0)
-        self.brake_toggle = tk.Checkbutton(
-            brake_container,
-            text="●",
-            variable=self.brake_var,
-            command=self.on_brake_toggle,
-            font=('Arial', 20, 'bold'),
-            bg='#808080',
-            selectcolor='#303030',
-            indicatoron=False,
-            width=4,
-            height=1,
-            relief=tk.RAISED,
-            bd=3
-        )
-        self.brake_toggle.pack(side=tk.RIGHT, padx=20, pady=10)
-        
-        # 3. DOORS
-        doors_container = tk.Frame(driver_inputs, bg='white', relief=tk.RIDGE, bd=2)
-        doors_container.pack(fill=tk.X, pady=15)
-        
-        tk.Label(doors_container, text="Doors", font=('Arial', 15, 'bold'), 
-                bg='white').pack(pady=5)
-        
-        doors_buttons = tk.Frame(doors_container, bg='white')
-        doors_buttons.pack(pady=5)
-        
-        self.door_var = tk.StringVar(value="Closed")
-        self.door_closed_btn = tk.Radiobutton(doors_buttons, text="Closed", variable=self.door_var, value="Closed", 
-                      command=self.on_door_change, bg='#add8e6', font=('Arial', 12, 'bold'), 
-                      indicatoron=False, width=10, height=2, relief=tk.RAISED, bd=2)
-        self.door_closed_btn.pack(side=tk.LEFT, padx=3)
-        
-        self.door_left_btn = tk.Radiobutton(doors_buttons, text="Left", variable=self.door_var, value="Left", 
-                      command=self.on_door_change, bg='white', font=('Arial', 12), 
-                      indicatoron=False, width=10, height=2, relief=tk.RAISED, bd=2)
-        self.door_left_btn.pack(side=tk.LEFT, padx=3)
-        
-        self.door_right_btn = tk.Radiobutton(doors_buttons, text="Right", variable=self.door_var, value="Right", 
-                      command=self.on_door_change, bg='white', font=('Arial', 12), 
-                      indicatoron=False, width=10, height=2, relief=tk.RAISED, bd=2)
-        self.door_right_btn.pack(side=tk.LEFT, padx=3)
-        
-        # 4. LIGHT
-        light_container = tk.Frame(driver_inputs, bg='white', relief=tk.RIDGE, bd=2)
-        light_container.pack(fill=tk.X, pady=15)
-        
-        tk.Label(light_container, text="Light", font=('Arial', 15, 'bold'), 
-                bg='white').pack(pady=5)
-        
-        light_buttons = tk.Frame(light_container, bg='white')
-        light_buttons.pack(pady=5)
-        
+        self.root.title("Train Controller  –  PAAC North Shore")
+        self.root.configure(bg=C["bg_dark"])
+        self.root.geometry("1300x860")
+        self.root.minsize(1100, 760)
+        # custom title bar feel with resizable
+        self.root.resizable(True, True)
+
+    #  header 
+
+    def _build_header(self):
+        hdr = tk.Frame(self.root, bg=C["bg_header"], height=64)
+        hdr.pack(fill=tk.X, side=tk.TOP)
+        hdr.pack_propagate(False)
+
+        # Logo block
+        logo_f = tk.Frame(hdr, bg=C["accent"], padx=14, pady=0)
+        logo_f.pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(logo_f, text="TC", bg=C["accent"], fg="white",
+                 font=("Courier", 26, "bold")).pack(expand=True)
+
+        # Title
+        tk.Label(hdr, text="  TRAIN CONTROLLER", bg=C["bg_header"],
+                 fg="white", font=("Courier", 20, "bold")).pack(side=tk.LEFT, pady=10)
+        tk.Label(hdr, text="  PAAC North Shore Extension",
+                 bg=C["bg_header"], fg=C["text_dim"],
+                 font=("Courier", 10)).pack(side=tk.LEFT, pady=10)
+
+        # Right side – clock & test UI button
+        right = tk.Frame(hdr, bg=C["bg_header"])
+        right.pack(side=tk.RIGHT, padx=16, fill=tk.Y)
+
+        self.clock_lbl = tk.Label(right, text="00:00:00", bg=C["bg_header"],
+                                   fg=C["accent2"], font=("Courier", 16, "bold"))
+        self.clock_lbl.pack(side=tk.TOP, pady=(8, 0))
+
+        pill_button(right, "TEST UI", self._open_test_ui,
+                    color=C["accent_dim"], font_size=9, width=8
+                    ).pack(side=tk.TOP, pady=4)
+
+    #  body 
+
+    def _build_body(self):
+        body = tk.Frame(self.root, bg=C["bg_dark"])
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 0))
+
+        # ── LEFT PANEL ──
+        left = tk.Frame(body, bg=C["bg_panel"], width=420)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
+        left.pack_propagate(False)
+
+        # Train selector tabs
+        self._build_train_tabs(left)
+
+        # Scrollable controls area
+        ctrl_canvas = tk.Canvas(left, bg=C["bg_panel"], highlightthickness=0)
+        ctrl_scroll = tk.Scrollbar(left, orient="vertical", command=ctrl_canvas.yview,
+                                    bg=C["bg_panel"], troughcolor=C["bg_dark"])
+        ctrl_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        ctrl_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ctrl_canvas.configure(yscrollcommand=ctrl_scroll.set)
+
+        self.ctrl_inner = tk.Frame(ctrl_canvas, bg=C["bg_panel"])
+        ctrl_canvas.create_window((0, 0), window=self.ctrl_inner, anchor="nw")
+        self.ctrl_inner.bind("<Configure>",
+            lambda e: ctrl_canvas.configure(scrollregion=ctrl_canvas.bbox("all")))
+        ctrl_canvas.bind_all("<MouseWheel>",
+            lambda e: ctrl_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        self._build_controls(self.ctrl_inner)
+
+        # ── RIGHT PANEL ──
+        right = tk.Frame(body, bg=C["bg_panel"])
+        right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self._build_right(right)
+
+    #  train selector tabs 
+
+    def _build_train_tabs(self, parent):
+        tab_f = tk.Frame(parent, bg=C["bg_dark"])
+        tab_f.pack(fill=tk.X)
+        self.train_tab_btns = []
+        for i in range(self.NUM_TRAINS):
+            b = tk.Button(tab_f, text=f" Train {i+1} ",
+                          bg=C["train_sel"] if i==0 else C["bg_dark"],
+                          fg=C["accent2"] if i==0 else C["text_dim"],
+                          font=("Courier", 10, "bold"),
+                          relief=tk.FLAT, bd=0, pady=8, padx=4,
+                          cursor="hand2",
+                          command=lambda idx=i: self._select_train(idx))
+            b.pack(side=tk.LEFT, expand=True, fill=tk.X)
+            self.train_tab_btns.append(b)
+
+        # thin status indicators under tabs
+        ind_f = tk.Frame(parent, bg=C["bg_dark"], height=4)
+        ind_f.pack(fill=tk.X)
+        self.train_indicators = []
+        for i in range(self.NUM_TRAINS):
+            ind = tk.Frame(ind_f, bg=C["accent"] if i==0 else C["bg_dark"], height=4)
+            ind.pack(side=tk.LEFT, expand=True, fill=tk.X)
+            self.train_indicators.append(ind)
+
+    def _select_train(self, idx):
+        self.active = idx
+        for i, (b, ind) in enumerate(zip(self.train_tab_btns, self.train_indicators)):
+            b.config(bg=C["train_sel"] if i==idx else C["bg_dark"],
+                     fg=C["accent2"]   if i==idx else C["text_dim"])
+            ind.config(bg=C["accent"] if i==idx else C["bg_dark"])
+        self._refresh_controls()
+
+    #  left controls 
+
+    def _build_controls(self, parent):
+
+        #  Emergency Brake 
+        section_title(parent, "Emergency Brake")
+        eb_card = card(parent, bg="#1a0000", pad=12)
+        self.ebrake_btn = tk.Button(eb_card,
+            text="🚨  EMERGENCY BRAKE",
+            font=("Courier", 14, "bold"),
+            bg=C["accent"], fg="white",
+            activebackground="#ff0000",
+            relief=tk.FLAT, bd=0, pady=14,
+            cursor="hand2",
+            command=self._on_ebrake)
+        self.ebrake_btn.pack(fill=tk.X)
+        self.ebrake_status = tk.Label(eb_card, text="● INACTIVE",
+                                       bg="#1a0000", fg=C["ok"],
+                                       font=("Courier", 10, "bold"))
+        self.ebrake_status.pack(pady=(6, 0))
+
+        #  Service Brake 
+        section_title(parent, "Service Brake")
+        brk_card = card(parent, pad=10)
+        brk_row = tk.Frame(brk_card, bg=C["bg_card"])
+        brk_row.pack(fill=tk.X)
+        tk.Label(brk_row, text="Service Brake", bg=C["bg_card"],
+                 fg=C["text"], font=("Courier", 11)).pack(side=tk.LEFT, padx=4)
+        self.brake_btn = tk.Button(brk_row, text="  OFF  ",
+                                    font=("Courier", 10, "bold"),
+                                    bg=C["deselect"], fg=C["text_dim"],
+                                    relief=tk.FLAT, bd=0, padx=10, pady=4,
+                                    cursor="hand2", command=self._on_brake)
+        self.brake_btn.pack(side=tk.RIGHT)
+
+        #  Doors 
+        section_title(parent, "Doors")
+        door_card = card(parent, pad=12)
+
+        # Status indicator
+        door_status_row = tk.Frame(door_card, bg=C["bg_card"])
+        door_status_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(door_status_row, text="Current:", bg=C["bg_card"],
+                 fg=C["text_dim"], font=("Courier", 9)).pack(side=tk.LEFT)
+        self.door_status_lbl = tk.Label(door_status_row, text="🚪  CLOSED",
+                 bg=C["bg_card"], fg=C["ok"],
+                 font=("Courier", 10, "bold"))
+        self.door_status_lbl.pack(side=tk.LEFT, padx=8)
+
+        # Big clear door buttons in a 2x2 grid
+        self.door_var = tk.StringVar(value="0")
+        self.door_btns = {}
+        door_grid = tk.Frame(door_card, bg=C["bg_card"])
+        door_grid.pack(fill=tk.X)
+
+        door_defs = [
+            ("🚪\nCLOSED",  "0",  0, 0, C["ok"]),
+            ("◀  LEFT\nOPEN", "2",  0, 1, C["accent"]),
+            ("RIGHT ▶\nOPEN", "1",  1, 0, C["accent"]),
+            ("◀  BOTH  ▶\nOPEN",  "3",  1, 1, C["warn"]),
+        ]
+        for txt, val, row, col, active_col in door_defs:
+            btn = tk.Button(door_grid, text=txt,
+                            font=("Courier", 10, "bold"),
+                            bg=active_col if val == "0" else C["deselect"],
+                            fg="white",
+                            relief=tk.FLAT, bd=0,
+                            padx=6, pady=10,
+                            width=12, cursor="hand2",
+                            command=lambda v=val: self._on_door(v))
+            btn.grid(row=row, column=col, padx=4, pady=4, sticky="ew")
+            self.door_btns[val] = btn
+        door_grid.columnconfigure(0, weight=1)
+        door_grid.columnconfigure(1, weight=1)
+
+        #  Lights 
+        section_title(parent, "Lights")
+        light_card = card(parent, pad=12)
+
+        # Status indicator
+        light_status_row = tk.Frame(light_card, bg=C["bg_card"])
+        light_status_row.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(light_status_row, text="Current:", bg=C["bg_card"],
+                 fg=C["text_dim"], font=("Courier", 9)).pack(side=tk.LEFT)
+        self.light_status_lbl = tk.Label(light_status_row, text="💡  OFF",
+                 bg=C["bg_card"], fg=C["text_dim"],
+                 font=("Courier", 10, "bold"))
+        self.light_status_lbl.pack(side=tk.LEFT, padx=8)
+
+        # Three big light buttons side by side
         self.light_var = tk.StringVar(value="Off")
-        self.light_off_btn = tk.Radiobutton(light_buttons, text="Off", variable=self.light_var, value="Off", 
-                      command=self.on_light_change, bg='#add8e6', font=('Arial', 12, 'bold'), 
-                      indicatoron=False, width=10, height=2, relief=tk.RAISED, bd=2)
-        self.light_off_btn.pack(side=tk.LEFT, padx=3)
-        
-        self.light_ext_btn = tk.Radiobutton(light_buttons, text="External", variable=self.light_var, value="External", 
-                      command=self.on_light_change, bg='white', font=('Arial', 12), 
-                      indicatoron=False, width=10, height=2, relief=tk.RAISED, bd=2)
-        self.light_ext_btn.pack(side=tk.LEFT, padx=3)
-        
-        self.light_int_btn = tk.Radiobutton(light_buttons, text="Internal", variable=self.light_var, value="Internal", 
-                      command=self.on_light_change, bg='white', font=('Arial', 12), 
-                      indicatoron=False, width=10, height=2, relief=tk.RAISED, bd=2)
-        self.light_int_btn.pack(side=tk.LEFT, padx=3)
-        
-        # 5. OPERATION MODE
-        mode_container = tk.Frame(driver_inputs, bg='#80ffff', relief=tk.RAISED, bd=3)
-        mode_container.pack(fill=tk.X, pady=15)
-        
-        tk.Label(mode_container, text="Operation Mode", font=('Arial', 15, 'bold'), 
-                bg='#80ffff').pack(pady=5)
-        
-        mode_buttons = tk.Frame(mode_container, bg='#80ffff')
-        mode_buttons.pack(pady=5)
-        
-        self.mode_var = tk.StringVar(value="Auto")
-        tk.Radiobutton(mode_buttons, text="Auto", variable=self.mode_var, value="Auto", 
-                      command=self.on_mode_change, bg='white', font=('Arial', 12, 'bold'), 
-                      indicatoron=False, width=12, height=2, relief=tk.RAISED, bd=2).pack(side=tk.LEFT, padx=3)
-        tk.Radiobutton(mode_buttons, text="Manual", variable=self.mode_var, value="Manual", 
-                      command=self.on_mode_change, bg='white', font=('Arial', 12), 
-                      indicatoron=False, width=12, height=2, relief=tk.RAISED, bd=2).pack(side=tk.LEFT, padx=3)
-        
-        #  RIGHT SIDE 
-        right_frame = tk.Frame(main_container, bg='#f0f0f0', width=600)
-        right_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        # Driver Outputs Display
-        outputs_section = tk.LabelFrame(right_frame, text="Driver Outputs Display", 
-                                       font=('Arial', 15, 'bold'), bg='white', 
-                                       padx=25, pady=25, relief=tk.RIDGE, bd=3)
-        outputs_section.pack(fill=tk.BOTH, expand=True)
-        
-        grid_container = tk.Frame(outputs_section, bg='white')
-        grid_container.pack(expand=True, pady=30)
-        
-        # Speed Display
-        tk.Label(grid_container, text="Speed", font=('Arial', 14, 'bold'), 
-                bg='white', fg='black', width=18, height=2, relief=tk.RAISED, bd=3).grid(row=0, column=0, padx=10, pady=12)
-        
-        self.speed_display = tk.Label(grid_container, text="0 mph", font=('Arial', 14, 'bold'), 
-                                      bg='white', fg='black', width=18, height=2, relief=tk.SUNKEN, bd=3)
-        self.speed_display.grid(row=0, column=1, padx=10, pady=12)
-        
-        # Authority Display
-        tk.Label(grid_container, text="Authority", font=('Arial', 14, 'bold'), 
-                bg='#ffff99', fg='black', width=18, height=2, relief=tk.RAISED, bd=3).grid(row=1, column=0, padx=10, pady=12)
-        
-        self.authority_display = tk.Label(grid_container, text="0 miles", font=('Arial', 14, 'bold'), 
-                                         bg='white', fg='black', width=18, height=2, relief=tk.SUNKEN, bd=3)
-        self.authority_display.grid(row=1, column=1, padx=10, pady=12)
-        
-        # Passengers Display
-        tk.Label(grid_container, text="Passengers", font=('Arial', 14, 'bold'), 
-                bg='#99ccff', fg='black', width=18, height=2, relief=tk.RAISED, bd=3).grid(row=2, column=0, padx=10, pady=12)
-        
-        self.passengers_display = tk.Label(grid_container, text="0", font=('Arial', 14, 'bold'), 
-                                           bg='white', fg='black', width=18, height=2, relief=tk.SUNKEN, bd=3)
-        self.passengers_display.grid(row=2, column=1, padx=10, pady=12)
-        
-        # Next Station Display
-        tk.Label(grid_container, text="Next Station", font=('Arial', 14, 'bold'), 
-                bg='#c0c0c0', fg='black', width=18, height=2, relief=tk.RAISED, bd=3).grid(row=3, column=0, padx=10, pady=12)
-        
-        self.station_display = tk.Label(grid_container, text="YARD", font=('Arial', 14, 'bold'), 
-                                       bg='white', fg='black', width=18, height=2, relief=tk.SUNKEN, bd=3)
-        self.station_display.grid(row=3, column=1, padx=10, pady=12)
-        
-        # TRAIN ENGINEER INPUTS 
-        engineer_section = tk.LabelFrame(outputs_section, text="Train Engineer Inputs:", 
-                                        font=('Arial', 14, 'bold'), bg='#ffffee', 
-                                        padx=25, pady=20, relief=tk.RIDGE, bd=3)
-        engineer_section.pack(fill=tk.BOTH, pady=(25, 0))
-        
-        engineer_grid = tk.Frame(engineer_section, bg='#ffffee')
-        engineer_grid.pack()
-        
-        # Kp Input
-        tk.Label(engineer_grid, text="Enter the amount of Kp:", font=('Arial', 13), 
-                bg='#ffffee', fg='black').grid(row=0, column=0, pady=10, sticky='w', padx=10)
-        
-        self.kp_entry = tk.Entry(engineer_grid, font=('Arial', 14), width=20, 
-                                justify='center', relief=tk.SUNKEN, bd=2, 
-                                bg='white', fg='black', insertbackground='black')
-        self.kp_entry.grid(row=1, column=0, pady=5, padx=10)
-        self.kp_entry.insert(0, "10.0")
-        
-        tk.Button(engineer_grid, text="Set Kp", command=self.on_kp_set, 
-                 bg='#90ee90', font=('Arial', 11, 'bold'), width=12).grid(row=2, column=0, pady=5)
-        
-        # Ki Input
-        tk.Label(engineer_grid, text="Enter the amount of Ki:", font=('Arial', 13), 
-                bg='#ffffee', fg='black').grid(row=0, column=1, pady=10, sticky='w', padx=10)
-        
-        self.ki_entry = tk.Entry(engineer_grid, font=('Arial', 14), width=20, 
-                                justify='center', relief=tk.SUNKEN, bd=2,
-                                bg='white', fg='black', insertbackground='black')
-        self.ki_entry.grid(row=1, column=1, pady=5, padx=10)
-        self.ki_entry.insert(0, "8000.0")
-        
-        tk.Button(engineer_grid, text="Set Ki", command=self.on_ki_set, 
-                 bg='#90ee90', font=('Arial', 11, 'bold'), width=12).grid(row=2, column=1, pady=5)
-        
-        # TESTING SECTION 
-        test_frame = tk.LabelFrame(self.root, text=" Testing Controls (Simulates CTC/Track Inputs)", 
-                                  font=('Arial', 13, 'bold'), bg='#ffe9e9', 
-                                  padx=20, pady=15, relief=tk.RIDGE, bd=3)
-        test_frame.pack(fill=tk.X, padx=15, pady=(0, 10))
-        
-        test_grid = tk.Frame(test_frame, bg='#ffe9e9')
-        test_grid.pack()
-        
-        # Commanded Speed
-        tk.Label(test_grid, text="Commanded Speed (mph):", font=('Arial', 11), 
-                bg='#ffe9e9').grid(row=0, column=0, padx=8, sticky='e')
-        self.cmd_speed_entry = tk.Entry(test_grid, width=10, font=('Arial', 12), 
-                                        bg='white', fg='black', insertbackground='black')
-        self.cmd_speed_entry.grid(row=0, column=1, padx=5)
-        self.cmd_speed_entry.insert(0, "30")
-        tk.Button(test_grid, text="Apply", command=self.on_cmd_speed_set, 
-                 bg='lightgreen', width=8, font=('Arial', 10, 'bold')).grid(row=0, column=2, padx=5)
-        
-        # Authority
-        tk.Label(test_grid, text="Authority (meters):", font=('Arial', 11), 
-                bg='#ffe9e9').grid(row=0, column=3, padx=8, sticky='e')
-        self.auth_entry = tk.Entry(test_grid, width=10, font=('Arial', 12),
-                                   bg='white', fg='black', insertbackground='black')
-        self.auth_entry.grid(row=0, column=4, padx=5)
-        self.auth_entry.insert(0, "500")
-        tk.Button(test_grid, text="Apply", command=self.on_auth_set, 
-                 bg='lightgreen', width=8, font=('Arial', 10, 'bold')).grid(row=0, column=5, padx=5)
-        
-        # Passengers
-        tk.Label(test_grid, text="Passengers:", font=('Arial', 11), 
-                bg='#ffe9e9').grid(row=1, column=0, padx=8, pady=8, sticky='e')
-        self.passengers_entry = tk.Entry(test_grid, width=10, font=('Arial', 12),
-                                         bg='white', fg='black', insertbackground='black')
-        self.passengers_entry.grid(row=1, column=1, padx=5, pady=8)
-        self.passengers_entry.insert(0, "0")
-        tk.Button(test_grid, text="Apply", command=self.on_passengers_set, 
-                 bg='lightgreen', width=8, font=('Arial', 10, 'bold')).grid(row=1, column=2, padx=5, pady=8)
-        
-        # Current Speed
-        tk.Label(test_grid, text="Simulate Speed (mph):", font=('Arial', 11), 
-                bg='#ffe9e9').grid(row=1, column=3, padx=8, pady=8, sticky='e')
-        self.current_speed_entry = tk.Entry(test_grid, width=10, font=('Arial', 12),
-                                            bg='white', fg='black', insertbackground='black')
-        self.current_speed_entry.grid(row=1, column=4, padx=5, pady=8)
-        self.current_speed_entry.insert(0, "0")
-        tk.Button(test_grid, text="Apply", command=self.on_current_speed_set, 
-                 bg='lightgreen', width=8, font=('Arial', 10, 'bold')).grid(row=1, column=5, padx=5, pady=8)
-        
-        # Failures
-        tk.Label(test_grid, text="Simulate Failures:", font=('Arial', 11, 'bold'), 
-                bg='#ffe9e9').grid(row=2, column=0, columnspan=2, pady=8)
-        
-        self.power_fail_btn = tk.Button(test_grid, text="Power Failure", 
-                                        command=lambda: self.simulate_failure('power'), 
-                                        bg='orange', width=12, font=('Arial', 10, 'bold'))
-        self.power_fail_btn.grid(row=2, column=2, padx=3, pady=8)
-        
-        self.brake_fail_btn = tk.Button(test_grid, text="Brake Failure", 
-                                        command=lambda: self.simulate_failure('brake'), 
-                                        bg='orange', width=12, font=('Arial', 10, 'bold'))
-        self.brake_fail_btn.grid(row=2, column=3, padx=3, pady=8)
-        
-        self.signal_fail_btn = tk.Button(test_grid, text="Signal Failure", 
-                                         command=lambda: self.simulate_failure('signal'), 
-                                         bg='orange', width=12, font=('Arial', 10, 'bold'))
-        self.signal_fail_btn.grid(row=2, column=4, padx=3, pady=8)
-        
-        # Start Simulation
-        self.sim_btn = tk.Button(test_grid, text=" START SIMULATION", 
-                                command=self.start_simulation, 
-                                bg='#90EE90', font=('Arial', 13, 'bold'), width=25, height=2)
-        self.sim_btn.grid(row=3, column=0, columnspan=6, pady=15)
-        
-        #  STATUS BAR 
-        self.status_bar = tk.Label(self.root, text="✓ System Ready - Automatic Mode", 
-                                  font=('Arial', 12, 'bold'), bg='#2d2d2d', fg='#00ff00', 
-                                  anchor='w', padx=15, height=2)
-        self.status_bar.pack(fill=tk.X, side=tk.BOTTOM)
-    
-    
-   
-    # TEST UI CONTROL
-  
-    
-    def open_test_ui(self):
-        """Open or show the Test UI window"""
-        if self.test_ui is None:
-            # Create Test UI for the first time
-            self.test_ui = TrainControllerTestUI(self.controller, self.root)
-            print("✓ Test UI opened")
+        self.light_btns = {}
+        light_row = tk.Frame(light_card, bg=C["bg_card"])
+        light_row.pack(fill=tk.X)
+
+        light_defs = [
+            ("💡\nOFF",       "Off",      C["deselect"], C["text_dim"]),
+            ("🔦\nEXTERNAL",  "External", C["warn"],     "white"),
+            ("🏠\nINTERNAL",  "Internal", "#005588",     "white"),
+        ]
+        for txt, val, active_col, active_fg in light_defs:
+            is_sel = (val == "Off")
+            btn = tk.Button(light_row, text=txt,
+                            font=("Courier", 10, "bold"),
+                            bg=C["deselect"] if not is_sel else "#333333",
+                            fg=C["text_dim"] if not is_sel else "white",
+                            relief=tk.FLAT, bd=0,
+                            padx=6, pady=10,
+                            width=10, cursor="hand2",
+                            command=lambda v=val, ac=active_col, af=active_fg:
+                                self._on_light(v, ac, af))
+            btn.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
+            self.light_btns[val] = (btn, active_col, active_fg)
+
+        #  Operation Mode 
+        section_title(parent, "Operation Mode")
+        mode_card = card(parent, pad=10)
+        mode_opts = [("🤖  AUTO","Auto"),("👤  MANUAL","Manual")]
+        self.mode_frm, self.mode_var, self.mode_btns = toggle_group(
+            mode_card, mode_opts, self._on_mode, bg_sel="#006600")
+        self.mode_frm.pack(fill=tk.X)
+
+        #  Set Speed 
+        section_title(parent, "Set Speed  (Manual)")
+        spd_card = card(parent, pad=10)
+        spd_row = tk.Frame(spd_card, bg=C["bg_card"]); spd_row.pack(fill=tk.X)
+        tk.Label(spd_row, text="Target (mph):", bg=C["bg_card"],
+                 fg=C["text"], font=("Courier", 10)).pack(side=tk.LEFT, padx=4)
+        self.manual_spd_var = tk.StringVar(value="0")
+        spd_e = tk.Entry(spd_row, textvariable=self.manual_spd_var,
+                          font=("Courier", 12, "bold"), width=6,
+                          bg=C["bg_dark"], fg=C["text_lcd"],
+                          insertbackground=C["accent"],
+                          relief=tk.FLAT, bd=1, justify="center")
+        spd_e.pack(side=tk.LEFT, padx=6)
+        pill_button(spd_row, "SET", self._on_set_speed,
+                    width=6, font_size=10).pack(side=tk.LEFT)
+
+        #  Train Engineer 
+        section_title(parent, "Train Engineer  (Kp / Ki)")
+        eng_card = card(parent, pad=10)
+
+        for label, attr_e, attr_d, default, cmd in [
+            ("Kp:", "kp_entry", "kp_disp", "10.0",   self._on_kp),
+            ("Ki:", "ki_entry", "ki_disp", "8000.0",  self._on_ki),
+        ]:
+            row = tk.Frame(eng_card, bg=C["bg_card"]); row.pack(fill=tk.X, pady=3)
+            tk.Label(row, text=label, bg=C["bg_card"], fg=C["text"],
+                     font=("Courier", 10), width=4).pack(side=tk.LEFT)
+            ent = tk.Entry(row, font=("Courier", 11, "bold"), width=9,
+                           bg=C["bg_dark"], fg=C["text_lcd"],
+                           insertbackground=C["accent"],
+                           relief=tk.FLAT, bd=1, justify="center")
+            ent.insert(0, default)
+            ent.pack(side=tk.LEFT, padx=6)
+            setattr(self, attr_e, ent)
+            pill_button(row, "SET", cmd, width=5, font_size=9).pack(side=tk.LEFT, padx=4)
+            disp = tk.Label(row, text=f"= {default}", bg=C["bg_card"],
+                             fg=C["ok"], font=("Courier", 9))
+            disp.pack(side=tk.LEFT, padx=4)
+            setattr(self, attr_d, disp)
+
+        #  Fault Simulation 
+        section_title(parent, "Fault Simulation  (Testing)")
+        fault_sim = card(parent, pad=10)
+        fsrow = tk.Frame(fault_sim, bg=C["bg_card"]); fsrow.pack(fill=tk.X)
+        self.pwr_sim_btn = pill_button(fsrow, "⚡ Power",
+            lambda: self._sim_fault("power"), color="#994400", width=9, font_size=9)
+        self.pwr_sim_btn.pack(side=tk.LEFT, padx=2)
+        self.brk_sim_btn = pill_button(fsrow, "🛑 Brake",
+            lambda: self._sim_fault("brake"), color="#994400", width=9, font_size=9)
+        self.brk_sim_btn.pack(side=tk.LEFT, padx=2)
+        self.sig_sim_btn = pill_button(fsrow, "📡 Signal",
+            lambda: self._sim_fault("signal"), color="#994400", width=9, font_size=9)
+        self.sig_sim_btn.pack(side=tk.LEFT, padx=2)
+
+        # ── CTC / Testing Inputs 
+        section_title(parent, "CTC / Testing Inputs")
+        ctc_card = card(parent, pad=10)
+
+        for label, attr, default, cmd in [
+            ("Cmd Speed (mph):", "ctc_spd",  "30",  self._apply_cmd_spd),
+            ("Authority (m):",   "ctc_auth", "500", self._apply_auth),
+            ("Passengers:",      "ctc_pass", "0",   self._apply_pass),
+            ("Sim Speed (mph):", "ctc_cspe", "0",   self._apply_cur_spd),
+        ]:
+            row = tk.Frame(ctc_card, bg=C["bg_card"]); row.pack(fill=tk.X, pady=3)
+            tk.Label(row, text=label, bg=C["bg_card"], fg=C["text_dim"],
+                     font=("Courier", 9), width=18, anchor="w").pack(side=tk.LEFT)
+            ent = tk.Entry(row, font=("Courier", 10), width=7,
+                           bg=C["bg_dark"], fg=C["text_lcd"],
+                           insertbackground=C["accent"],
+                           relief=tk.FLAT, bd=1, justify="center")
+            ent.insert(0, default)
+            ent.pack(side=tk.LEFT, padx=4)
+            setattr(self, attr, ent)
+            pill_button(row, "▶", cmd, width=3, font_size=9).pack(side=tk.LEFT)
+
+        #  Simulation 
+        sep(parent)
+        sim_f = tk.Frame(parent, bg=C["bg_panel"]); sim_f.pack(fill=tk.X, pady=6, padx=6)
+        self.sim_btn = tk.Button(sim_f,
+            text="▶  START SIMULATION",
+            font=("Courier", 12, "bold"),
+            bg="#005500", fg="white",
+            activebackground="#008800",
+            relief=tk.FLAT, bd=0, pady=10,
+            cursor="hand2", command=self._toggle_sim)
+        self.sim_btn.pack(fill=tk.X)
+
+    #  right panel 
+
+    def _build_right(self, parent):
+
+        #  TOP: per-train mini overview strip 
+        overview = tk.Frame(parent, bg=C["bg_dark"])
+        overview.pack(fill=tk.X, pady=(0, 6))
+        self.mini_cards = []
+        for i in range(self.NUM_TRAINS):
+            mc = self._make_mini_card(overview, i)
+            mc["frame"].pack(side=tk.LEFT, expand=True, fill=tk.X, padx=3)
+            self.mini_cards.append(mc)
+
+        #  MAIN OUTPUTS 
+        section_title(parent, "Driver Outputs Display")
+        out_card = tk.Frame(parent, bg=C["bg_card"], pady=10)
+        out_card.pack(fill=tk.X, padx=4)
+
+        out_grid = tk.Frame(out_card, bg=C["bg_card"]); out_grid.pack(padx=10, pady=6)
+
+        def _out_row(row, label, label_bg, attr, unit=""):
+            lf = tk.Frame(out_grid, bg=label_bg, padx=10, pady=8)
+            lf.grid(row=row, column=0, padx=6, pady=5, sticky="ew")
+            tk.Label(lf, text=label, bg=label_bg, fg="white",
+                     font=("Courier", 13, "bold"), width=14,
+                     anchor="center").pack()
+            val_f = tk.Frame(out_grid, bg=C["bg_dark"], padx=4, pady=4)
+            val_f.grid(row=row, column=1, padx=6, pady=5, sticky="ew")
+            val_lbl = tk.Label(val_f, text="–", bg="#0a0000", fg=C["text_lcd"],
+                                font=("Courier", 18, "bold"), width=14,
+                                anchor="e", padx=10)
+            val_lbl.pack()
+            unit_lbl = tk.Label(out_grid, text=unit, bg=C["bg_card"],
+                                 fg=C["text_dim"], font=("Courier", 10))
+            unit_lbl.grid(row=row, column=2, padx=4)
+            setattr(self, attr, val_lbl)
+
+        _out_row(0, "Actual Speed",   "#5a0000",  "disp_actual_spd",  "mph")
+        _out_row(1, "Set Speed",      "#3a2000",  "disp_set_spd",     "mph")
+        _out_row(2, "Authority",      "#3a3a00",  "disp_authority",   "miles")
+        _out_row(3, "Passengers",     "#003050",  "disp_passengers",  "pax")
+        _out_row(4, "Next Station",   "#1a1a3a",  "disp_next_station","")
+        _out_row(5, "Power Command",  "#003a00",  "disp_power",       "W")
+
+        out_grid.columnconfigure(0, weight=1)
+        out_grid.columnconfigure(1, weight=1)
+
+        #  FAULT INDICATORS 
+        section_title(parent, "Fault Indicators")
+        fault_card = card(parent, pad=12)
+        fault_row = tk.Frame(fault_card, bg=C["bg_card"]); fault_row.pack(fill=tk.X)
+
+        self.fault_lbls = {}
+        for fname in ["Power Fault", "Brake Fault", "Signal Fault"]:
+            key = fname.split()[0].lower()
+            col = tk.Frame(fault_row, bg=C["bg_card"]); col.pack(side=tk.LEFT, expand=True)
+            icon = tk.Label(col, text="●", bg=C["bg_card"], fg=C["text_dim"],
+                             font=("Courier", 22, "bold"))
+            icon.pack()
+            tk.Label(col, text=fname, bg=C["bg_card"], fg=C["text_dim"],
+                     font=("Courier", 9)).pack()
+            self.fault_lbls[key] = icon
+
+        #  SYSTEM STATUS 
+        section_title(parent, "System Status")
+        stat_card = card(parent, pad=10)
+        stat_row = tk.Frame(stat_card, bg=C["bg_card"]); stat_row.pack(fill=tk.X)
+
+        for label, attr in [("Mode","stat_mode"), ("Doors","stat_doors"),
+                              ("Lights","stat_lights"), ("E-Brake","stat_ebrake")]:
+            col = tk.Frame(stat_row, bg=C["bg_card"]); col.pack(side=tk.LEFT, expand=True)
+            tk.Label(col, text=label, bg=C["bg_card"], fg=C["text_dim"],
+                     font=("Courier", 9)).pack()
+            lbl = tk.Label(col, text="–", bg=C["bg_card"], fg=C["ok"],
+                            font=("Courier", 10, "bold"))
+            lbl.pack()
+            setattr(self, attr, lbl)
+
+    #  mini train card 
+
+    def _make_mini_card(self, parent, idx):
+        f = tk.Frame(parent, bg=C["bg_card"], relief=tk.FLAT, bd=0, padx=8, pady=8)
+        tk.Label(f, text=f"TRAIN {idx+1}", bg=C["bg_card"],
+                 fg=C["accent2"], font=("Courier", 9, "bold")).pack(anchor="w")
+        spd = tk.Label(f, text="0.0 mph", bg=C["bg_card"],
+                       fg=C["text_lcd"], font=("Courier", 11, "bold"))
+        spd.pack(anchor="w")
+        sta = tk.Label(f, text="YARD", bg=C["bg_card"],
+                       fg=C["text_dim"], font=("Courier", 8))
+        sta.pack(anchor="w")
+        fl = tk.Label(f, text="OK", bg=C["bg_card"], fg=C["ok"],
+                      font=("Courier", 8, "bold"))
+        fl.pack(anchor="w")
+        return {"frame": f, "spd": spd, "sta": sta, "fl": fl}
+
+    #  status bar 
+
+    def _build_status_bar(self):
+        bar = tk.Frame(self.root, bg="#0a0000", height=32)
+        bar.pack(fill=tk.X, side=tk.BOTTOM)
+        bar.pack_propagate(False)
+        self.status_lbl = tk.Label(bar, text="●  System Ready  –  Auto Mode",
+                                    bg="#0a0000", fg=C["ok"],
+                                    font=("Courier", 10, "bold"), anchor="w", padx=14)
+        self.status_lbl.pack(side=tk.LEFT, fill=tk.Y)
+        self.status_lbl2 = tk.Label(bar, text="",
+                                     bg="#0a0000", fg=C["text_dim"],
+                                     font=("Courier", 9), anchor="e", padx=14)
+        self.status_lbl2.pack(side=tk.RIGHT, fill=tk.Y)
+
+    #  event handlers 
+
+    @property
+    def T(self): return self.trains[self.active]
+
+    def _set_status(self, msg, color=None):
+        self.status_lbl.config(text=f"●  {msg}",
+                                fg=color or C["ok"])
+
+    def _on_ebrake(self):
+        t = self.T
+        if not t.emergency_brake:
+            t._activate_ebrake()
+            self.ebrake_btn.config(bg="#4a0000",
+                text="⚠  E-BRAKE ACTIVE  –  CLICK TO RELEASE")
+            self.ebrake_status.config(text="● ACTIVE", fg=C["fault"])
+            self._set_status("EMERGENCY BRAKE ACTIVE", C["fault"])
         else:
-            # Show it if it was hidden
-            self.test_ui.show()
-            print("✓ Test UI shown")
-    
-    
-    
-    # EVENT HANDLERS
-    
-    
-    def on_mode_change(self):
-        """Handle mode change"""
-        if self.mode_var.get() == "Auto":
-            self.controller.set_automatic_mode()
-            self.status_bar.config(text="✓ Automatic Mode - System Controls Train", 
-                                 fg='#00ff00', bg='#2d2d2d')
+            t.release_ebrake()
+            self.ebrake_btn.config(bg=C["accent"], text="🚨  EMERGENCY BRAKE")
+            self.ebrake_status.config(text="● INACTIVE", fg=C["ok"])
+            self._set_status("Emergency Brake Released")
+
+    def _on_brake(self):
+        t = self.T
+        t.service_brake = not t.service_brake
+        if t.service_brake:
+            self.brake_btn.config(text="  ON  🔴", bg=C["fault"], fg="white")
+            self._set_status("Service Brake Applied", C["warn"])
         else:
-            self.open_manual_speed_window()
-    
-    def open_manual_speed_window(self):
-        """Open popup for manual speed input"""
-        speed_window = tk.Toplevel(self.root)
-        speed_window.title("Manual Speed Control")
-        speed_window.geometry("450x280")
-        speed_window.configure(bg='white')
-        speed_window.transient(self.root)
-        speed_window.grab_set()
-        
-        speed_window.update_idletasks()
-        x = (speed_window.winfo_screenwidth() // 2) - (450 // 2)
-        y = (speed_window.winfo_screenheight() // 2) - (280 // 2)
-        speed_window.geometry(f"450x280+{x}+{y}")
-        
-        tk.Label(speed_window, text="Manual Speed Control", 
-                font=('Arial', 18, 'bold'), bg='white', fg='black').pack(pady=20)
-        
-        tk.Label(speed_window, text="Enter the amount of the speed:", 
-                font=('Arial', 14), bg='white', fg='black').pack(pady=15)
-        
-        speed_entry = tk.Entry(speed_window, font=('Arial', 18), width=15, 
-                              justify='center', relief=tk.SUNKEN, bd=3,
-                              bg='white', fg='black', insertbackground='black')
-        speed_entry.pack(pady=15)
-        speed_entry.focus()
-        
-        error_label = tk.Label(speed_window, text="", font=('Arial', 11), 
-                              bg='white', fg='red')
-        error_label.pack()
-        
-        buttons_frame = tk.Frame(speed_window, bg='white')
-        buttons_frame.pack(pady=20)
-        
-        def set_speed():
-            try:
-                speed = float(speed_entry.get())
-                if speed < 0 or speed > 80:
-                    error_label.config(text="⚠️ Speed must be between 0-80 mph")
-                    return
-                
-                self.controller.set_manual_mode(speed)
-                self.status_bar.config(text=f"⚠ Manual Mode - Target: {speed} mph", 
-                                     fg='yellow', bg='#2d2d2d')
-                
-                self.door_closed_btn.config(state='normal')
-                self.door_left_btn.config(state='normal')
-                self.door_right_btn.config(state='normal')
-                
-                self.light_off_btn.config(state='normal')
-                self.light_ext_btn.config(state='normal')
-                self.light_int_btn.config(state='normal')
-                
-                print(f" Manual Speed Set: {speed} mph")
-                speed_window.destroy()
-            except ValueError:
-                error_label.config(text=" Invalid! Enter a number")
-                speed_entry.delete(0, tk.END)
-                speed_entry.focus()
-        
-        def cancel():
-            self.mode_var.set("Auto")
-            self.controller.set_automatic_mode()
-            self.status_bar.config(text=" Cancelled - Automatic Mode", 
-                                 fg='#00ff00', bg='#2d2d2d')
-            
-            self.door_closed_btn.config(state='disabled')
-            self.door_left_btn.config(state='disabled')
-            self.door_right_btn.config(state='disabled')
-            
-            self.light_off_btn.config(state='disabled')
-            self.light_ext_btn.config(state='disabled')
-            self.light_int_btn.config(state='disabled')
-            
-            speed_window.destroy()
-        
-        tk.Button(buttons_frame, text="Set Speed", command=set_speed, 
-                 bg='#90ee90', font=('Arial', 13, 'bold'), width=12).pack(side=tk.LEFT, padx=5)
-        
-        tk.Button(buttons_frame, text="Cancel", command=cancel, 
-                 bg='#ffcccc', font=('Arial', 13, 'bold'), width=12).pack(side=tk.LEFT, padx=5)
-        
-        speed_entry.bind('<Return>', lambda e: set_speed())
-    
-    def on_emergency_brake(self):
-        """Emergency Brake clicked"""
-        if not self.controller.emergency_brake_active:
-            self.controller.activate_emergency_brake()
-            self.ebrake_btn.config(bg='#8b0000', fg='white', 
-                                  text="⚠️ E-BRAKE ACTIVE - CLICK TO RELEASE ⚠️")
-            self.status_bar.config(text="⚠️ EMERGENCY BRAKE ACTIVATED ⚠️", 
-                                 fg='white', bg='red')
+            self.brake_btn.config(text="  OFF  ", bg=C["deselect"], fg=C["text_dim"])
+
+    def _on_door(self, val):
+        t = self.T
+        if not t.automatic_mode:
+            t.set_doors(int(val))
+            # Update button highlights
+            door_labels = {"0":"🚪  CLOSED","1":"RIGHT OPEN","2":"LEFT OPEN","3":"BOTH OPEN"}
+            door_colors = {"0": C["ok"], "1": C["accent"], "2": C["accent"], "3": C["warn"]}
+            for v, btn in self.door_btns.items():
+                if v == val:
+                    btn.config(bg=door_colors[v], fg="white")
+                else:
+                    btn.config(bg=C["deselect"], fg=C["text_dim"])
+            self.door_status_lbl.config(
+                text=f"🚪  {door_labels.get(val,'CLOSED')}",
+                fg=C["ok"] if val=="0" else C["accent"])
+            self.door_var.set(val)
         else:
-            self.controller.release_emergency_brake()
-            self.ebrake_btn.config(bg='#ffb3ba', fg='#8b0000', text="Emergency Brake")
-            self.status_bar.config(text="✓ Emergency Brake Released", 
-                                 fg='#00ff00', bg='#2d2d2d')
-    
-    def on_brake_toggle(self):
-        """Service Brake toggled"""
-        self.controller.service_brake_active = (self.brake_var.get() == 1)
-        
-        if self.controller.service_brake_active:
-            self.brake_toggle.config(bg='#ff4444')
-            self.status_bar.config(text="🛑 Service Brake Applied", fg='yellow', bg='#2d2d2d')
+            # Reset all to closed
+            for v, btn in self.door_btns.items():
+                btn.config(bg=C["ok"] if v=="0" else C["deselect"],
+                           fg="white" if v=="0" else C["text_dim"])
+            self.door_var.set("0")
+            self.door_status_lbl.config(text="🚪  CLOSED", fg=C["ok"])
+            self._set_status("Doors locked in Auto mode", C["warn"])
+
+    def _on_light(self, val, active_col=None, active_fg=None):
+        t = self.T
+        if not t.automatic_mode:
+            t.set_lights(val)
+            # Update button highlights
+            for v, (btn, ac, af) in self.light_btns.items():
+                if v == val:
+                    btn.config(bg=ac, fg=af)
+                else:
+                    btn.config(bg=C["deselect"], fg=C["text_dim"])
+            light_icons = {"Off":"💡  OFF", "External":"🔦  EXTERNAL", "Internal":"🏠  INTERNAL"}
+            light_colors = {"Off": C["text_dim"], "External": C["warn"], "Internal": "#5599ff"}
+            self.light_status_lbl.config(
+                text=light_icons.get(val, "💡  OFF"),
+                fg=light_colors.get(val, C["text_dim"]))
+            self.light_var.set(val)
         else:
-            self.brake_toggle.config(bg='#808080')
-    
-    def on_door_change(self):
-        """Door selection changed"""
-        if not self.controller.automatic_mode:
-            door = self.door_var.get()
-            door_code = {"Closed": 0, "Left": 2, "Right": 1}
-            self.controller.set_doors(door_code.get(door, 0))
-        else:
-            self.door_var.set("Closed")
-            self.status_bar.config(text="⚠️ Cannot control doors in Auto mode!", 
-                                 fg='red', bg='#2d2d2d')
-    
-    def on_light_change(self):
-        """Light selection changed"""
-        if not self.controller.automatic_mode:
-            light = self.light_var.get()
-            self.controller.set_lights(light)
-        else:
+            for v, (btn, ac, af) in self.light_btns.items():
+                btn.config(bg=C["deselect"] if v!="Off" else "#333333",
+                           fg=C["text_dim"] if v!="Off" else "white")
             self.light_var.set("Off")
-            self.status_bar.config(text="⚠️ Cannot control lights in Auto mode!", 
-                                 fg='red', bg='#2d2d2d')
-    
-    def on_kp_set(self):
-        """Set Kp value"""
-        try:
-            kp = float(self.kp_entry.get())
-            self.controller.kp = kp
-            self.status_bar.config(text=f"✓ Kp updated: {kp}", fg='#00ff00', bg='#2d2d2d')
-            print(f"✓ Kp = {kp}")
-        except ValueError:
-            self.status_bar.config(text="❌ Invalid Kp value", fg='red', bg='#2d2d2d')
-    
-    def on_ki_set(self):
-        """Set Ki value"""
-        try:
-            ki = float(self.ki_entry.get())
-            self.controller.ki = ki
-            self.status_bar.config(text=f"✓ Ki updated: {ki}", fg='#00ff00', bg='#2d2d2d')
-            print(f"✓ Ki = {ki}")
-        except ValueError:
-            self.status_bar.config(text="❌ Invalid Ki value", fg='red', bg='#2d2d2d')
-    
-    def on_cmd_speed_set(self):
-        """Set commanded speed"""
-        try:
-            speed = float(self.cmd_speed_entry.get())
-            self.controller.commanded_speed = speed
-            self.status_bar.config(text=f"✓ CTC Command: {speed} mph", fg='#00ff00', bg='#2d2d2d')
-            print(f"✓ Commanded Speed = {speed} mph")
-        except ValueError:
-            self.status_bar.config(text="❌ Invalid value", fg='red', bg='#2d2d2d')
-    
-    def on_auth_set(self):
-        """Set authority"""
-        try:
-            auth = float(self.auth_entry.get())
-            self.controller.authority = auth
-            self.status_bar.config(text=f"✓ Authority: {auth}m", fg='#00ff00', bg='#2d2d2d')
-            print(f"✓ Authority = {auth} meters")
-        except ValueError:
-            self.status_bar.config(text="❌ Invalid value", fg='red', bg='#2d2d2d')
-    
-    def on_passengers_set(self):
-        """Set passenger count"""
-        try:
-            passengers = int(self.passengers_entry.get())
-            self.controller.passengers = passengers
-            print(f"✓ Passengers = {passengers}")
-        except ValueError:
-            self.status_bar.config(text="❌ Invalid value", fg='red', bg='#2d2d2d')
-    
-    def on_current_speed_set(self):
-        """Set current speed"""
-        try:
-            speed = float(self.current_speed_entry.get())
-            self.controller.current_speed = speed
-            print(f"✓ Current Speed = {speed} mph")
-        except ValueError:
-            self.status_bar.config(text="❌ Invalid value", fg='red', bg='#2d2d2d')
-    
-    def simulate_failure(self, failure_type):
-        """Simulate failures"""
-        if failure_type == 'power':
-            self.controller.handle_power_failure(not self.controller.power_failure)
-            if self.controller.power_failure:
-                self.power_fail_btn.config(bg='red', fg='white')
-            else:
-                self.power_fail_btn.config(bg='orange', fg='black')
-        
-        elif failure_type == 'brake':
-            self.controller.handle_brake_failure(not self.controller.brake_failure)
-            if self.controller.brake_failure:
-                self.brake_fail_btn.config(bg='red', fg='white')
-            else:
-                self.brake_fail_btn.config(bg='orange', fg='black')
-        
-        elif failure_type == 'signal':
-            self.controller.handle_signal_failure(not self.controller.signal_pickup_failure)
-            if self.controller.signal_pickup_failure:
-                self.signal_fail_btn.config(bg='red', fg='white')
-            else:
-                self.signal_fail_btn.config(bg='orange', fg='black')
-    
-    def start_simulation(self):
-        """Start/stop simulation"""
-        self.simulation_running = not self.simulation_running
-        
-        if self.simulation_running:
-            self.sim_btn.config(text="⏸ STOP SIMULATION", bg='#ffcccc')
-            self.status_bar.config(text="▶ Simulation Running...", fg='yellow', bg='#2d2d2d')
-            print("▶ Simulation Started")
-            self.simulate_train()
+            self.light_status_lbl.config(text="💡  OFF", fg=C["text_dim"])
+            self._set_status("Lights locked in Auto mode", C["warn"])
+
+    def _on_mode(self, val):
+        t = self.T
+        if val == "Auto":
+            t.set_auto()
+            self._set_status("Auto Mode Active")
         else:
-            self.sim_btn.config(text="▶ START SIMULATION", bg='#90EE90')
-            self.status_bar.config(text="⏸ Simulation Paused", fg='#00ff00', bg='#2d2d2d')
-            print("⏸ Simulation Stopped")
-    
-    def simulate_train(self):
-        """Simulate train movement"""
-        if not self.simulation_running:
-            return
-        
-        if (self.controller.current_speed < self.controller.commanded_speed and 
-            not self.controller.emergency_brake_active and
-            not self.controller.service_brake_active and
-            self.controller.authority > 0):
-            self.controller.current_speed += 0.5
-        
-        if self.controller.emergency_brake_active and self.controller.current_speed > 0:
-            self.controller.current_speed -= 2.0
-            if self.controller.current_speed < 0:
-                self.controller.current_speed = 0
-        elif self.controller.service_brake_active and self.controller.current_speed > 0:
-            self.controller.current_speed -= 1.0
-            if self.controller.current_speed < 0:
-                self.controller.current_speed = 0
-        
-        self.controller.update(0.1)
-        self.root.after(100, self.simulate_train)
-    
-    
-    
-    # DISPLAY UPDATE LOOP
-    
-    
-    def start_update_loop(self):
-        """Start the display update loop"""
-        self.update_display()
-    
-    def update_display(self):
-        """Update all displays"""
-        
-        self.speed_display.config(text=f"{self.controller.current_speed:.1f} mph")
-        
-        auth_miles = self.controller.authority * 0.000621371
-        self.authority_display.config(text=f"{auth_miles:.3f} miles")
-        
-        self.passengers_display.config(text=str(self.controller.passengers))
-        
-        self.station_display.config(text=self.controller.next_station)
-        
-        if self.controller.emergency_brake_active and self.ebrake_btn.cget('bg') == '#ffb3ba':
-            self.ebrake_btn.config(bg='#8b0000', fg='white', 
-                                  text="⚠️ E-BRAKE ACTIVE - CLICK TO RELEASE ⚠️")
-        
-        if self.controller.service_brake_active and self.brake_var.get() == 0:
-            self.brake_var.set(1)
-            self.brake_toggle.config(bg='#ff4444')
-        
-        self.root.after(100, self.update_display)
-    
-    
-   
-    # RUN
-   
-    
+            t.set_manual(t.manual_speed_target)
+            self._set_status("Manual Mode Active – set target speed", C["warn"])
+        # Kp / Ki are ALWAYS kept enabled regardless of mode or motion
+        self._ensure_engineer_inputs_enabled()
+
+    def _on_set_speed(self):
+        try:
+            spd = float(self.manual_spd_var.get())
+            if not (0 <= spd <= 80):
+                self._set_status("Speed must be 0–80 mph", C["warn"]); return
+            self.mode_btns["Manual"].config(bg=C["accent"], fg="white")
+            self.mode_btns["Auto"].config(bg=C["deselect"], fg=C["text_dim"])
+            self.mode_var.set("Manual")
+            self.T.set_manual(spd)
+            self._set_status(f"Manual – target {spd:.1f} mph", C["warn"])
+        except ValueError:
+            self._set_status("Invalid speed value", C["fault"])
+
+    def _ensure_engineer_inputs_enabled(self):
+        """Kp and Ki must ALWAYS be editable — even while train is moving."""
+        for widget in (self.kp_entry, self.ki_entry):
+            widget.config(state="normal",
+                          bg=C["bg_dark"], fg=C["text_lcd"],
+                          disabledbackground=C["bg_dark"])
+
+    def _on_kp(self):
+        self._ensure_engineer_inputs_enabled()   # safety: re-enable before reading
+        try:
+            v = float(self.kp_entry.get())
+            self.T.kp = v
+            self.kp_disp.config(text=f"= {v}", fg=C["ok"])
+            self._set_status(f"Kp updated → {v}")
+        except ValueError:
+            self._set_status("Invalid Kp value", C["fault"])
+
+    def _on_ki(self):
+        self._ensure_engineer_inputs_enabled()   # safety: re-enable before reading
+        try:
+            v = float(self.ki_entry.get())
+            self.T.ki = v
+            self.ki_disp.config(text=f"= {v}", fg=C["ok"])
+            self._set_status(f"Ki updated → {v}")
+        except ValueError:
+            self._set_status("Invalid Ki value", C["fault"])
+
+    def _sim_fault(self, kind):
+        t = self.T
+        if kind == "power":
+            t.set_power_fault(not t.fault_power)
+            active = t.fault_power
+            self.pwr_sim_btn.config(bg=C["fault"] if active else "#994400")
+        elif kind == "brake":
+            t.set_brake_fault(not t.fault_brake)
+            active = t.fault_brake
+            self.brk_sim_btn.config(bg=C["fault"] if active else "#994400")
+        elif kind == "signal":
+            t.set_signal_fault(not t.fault_signal)
+            active = t.fault_signal
+            self.sig_sim_btn.config(bg=C["fault"] if active else "#994400")
+        if t.any_fault:
+            self._set_status(f"FAULT DETECTED on Train {t.train_id}", C["fault"])
+
+    def _apply_cmd_spd(self):
+        try: self.T.commanded_speed = float(self.ctc_spd.get())
+        except ValueError: pass
+
+    def _apply_auth(self):
+        try: self.T.authority = float(self.ctc_auth.get())
+        except ValueError: pass
+
+    def _apply_pass(self):
+        try: self.T.passengers = int(self.ctc_pass.get())
+        except ValueError: pass
+
+    def _apply_cur_spd(self):
+        try: self.T.current_speed = float(self.ctc_cspe.get())
+        except ValueError: pass
+
+    def _toggle_sim(self):
+        self.sim_running = not self.sim_running
+        if self.sim_running:
+            self.sim_btn.config(text="⏸  STOP SIMULATION", bg=C["accent_dim"])
+            self._sim_step()
+        else:
+            self.sim_btn.config(text="▶  START SIMULATION", bg="#005500")
+        self._ensure_engineer_inputs_enabled()   # re-enable after sim stops
+
+    #  simulation 
+
+    def _sim_step(self):
+        if not self.sim_running: return
+        for t in self.trains:
+            target = t.commanded_speed if t.automatic_mode else t.manual_speed_target
+            if t.emergency_brake and t.current_speed > 0:
+                t.current_speed = max(0.0, t.current_speed - 2.0)
+            elif t.service_brake and t.current_speed > 0:
+                t.current_speed = max(0.0, t.current_speed - 1.0)
+            elif t.current_speed < target and not t.emergency_brake and t.authority > 0:
+                t.current_speed = min(target, t.current_speed + 0.5)
+            t.update(0.1)
+        self.root.after(100, self._sim_step)
+
+    #  refresh all displays 
+
+    def _refresh_all(self):
+        self._refresh_controls()
+        self._refresh_mini_cards()
+        self._refresh_clock()
+        self._ensure_engineer_inputs_enabled()   # called every 100ms – Kp/Ki ALWAYS editable
+        self.root.after(100, self._refresh_all)
+
+    def _refresh_controls(self):
+        t = self.T
+        DOOR = {0:"Closed",1:"Right",2:"Left",3:"Both"}
+        light = ("External" if t.headlights else ("Internal" if t.interior_lights else "Off"))
+
+        # outputs
+        self.disp_actual_spd.config(   text=f"{t.current_speed:.1f}")
+        self.disp_set_spd.config(
+            text=f"{t.commanded_speed:.1f}" if t.automatic_mode
+            else f"{t.manual_speed_target:.1f}  ✎")
+        auth_mi = t.authority * 0.000621371
+        self.disp_authority.config(    text=f"{auth_mi:.3f}")
+        self.disp_passengers.config(   text=str(t.passengers))
+        self.disp_next_station.config( text=t.next_station)
+        self.disp_power.config(        text=f"{t.power_output:,.0f}")
+
+        # faults
+        for key, attr in [("power","fault_power"),("brake","fault_brake"),("signal","fault_signal")]:
+            active = getattr(t, attr)
+            self.fault_lbls[key].config(
+                fg=C["fault"] if active else C["text_dim"])
+
+        # status row
+        self.stat_mode.config(
+            text="AUTO" if t.automatic_mode else "MANUAL",
+            fg=C["ok"] if t.automatic_mode else C["warn"])
+        self.stat_doors.config(
+            text=DOOR.get(t.doors_state,"Closed"),
+            fg=C["warn"] if t.doors_state else C["ok"])
+        self.stat_lights.config(text=light,
+            fg=C["warn"] if light!="Off" else C["text_dim"])
+
+        # keep door & light button highlights in sync with controller state
+        dv = str(t.doors_state)
+        door_colors = {"0": C["ok"], "1": C["accent"], "2": C["accent"], "3": C["warn"]}
+        for v, btn in self.door_btns.items():
+            btn.config(bg=door_colors[v] if v==dv else C["deselect"],
+                       fg="white" if v==dv else C["text_dim"])
+        door_labels = {"0":"🚪  CLOSED","1":"RIGHT OPEN","2":"LEFT OPEN","3":"BOTH OPEN"}
+        self.door_status_lbl.config(
+            text=door_labels.get(dv,"🚪  CLOSED"),
+            fg=C["ok"] if dv=="0" else C["accent"])
+
+        lv = light
+        light_icons  = {"Off":"💡  OFF","External":"🔦  EXTERNAL","Internal":"🏠  INTERNAL"}
+        light_colors_map = {"Off":C["text_dim"],"External":C["warn"],"Internal":"#5599ff"}
+        for v, (btn, ac, af) in self.light_btns.items():
+            btn.config(bg=ac if v==lv else C["deselect"],
+                       fg=af if v==lv else C["text_dim"])
+        self.light_status_lbl.config(
+            text=light_icons.get(lv,"💡  OFF"),
+            fg=light_colors_map.get(lv, C["text_dim"]))
+        self.stat_ebrake.config(
+            text="ACTIVE" if t.emergency_brake else "OFF",
+            fg=C["fault"] if t.emergency_brake else C["ok"])
+
+        # sync e-brake button if triggered internally
+        if t.emergency_brake and "RELEASE" not in self.ebrake_btn.cget("text"):
+            self.ebrake_btn.config(bg="#4a0000",
+                text="⚠  E-BRAKE ACTIVE  –  CLICK TO RELEASE")
+            self.ebrake_status.config(text="● ACTIVE", fg=C["fault"])
+
+        # secondary status
+        self.status_lbl2.config(
+            text=f"Train {t.train_id}  |  "
+                 f"Spd {t.current_speed:.1f} mph  |  "
+                 f"Auth {t.authority:.0f} m  |  "
+                 f"Pwr {t.power_output:,.0f} W")
+
+    def _refresh_mini_cards(self):
+        for i, (t, mc) in enumerate(zip(self.trains, self.mini_cards)):
+            mc["spd"].config(text=f"{t.current_speed:.1f} mph")
+            mc["sta"].config(text=t.next_station)
+            if t.any_fault or t.emergency_brake:
+                mc["fl"].config(text="⚠ FAULT", fg=C["fault"])
+                mc["frame"].config(bg="#1a0000")
+                mc["spd"].config(bg="#1a0000")
+                mc["sta"].config(bg="#1a0000")
+                mc["fl"].config(bg="#1a0000")
+            else:
+                mc["fl"].config(text="● OK", fg=C["ok"])
+                mc["frame"].config(bg=C["bg_card"])
+                mc["spd"].config(bg=C["bg_card"])
+                mc["sta"].config(bg=C["bg_card"])
+                mc["fl"].config(bg=C["bg_card"])
+
+    def _refresh_clock(self):
+        t = time.localtime()
+        self.clock_lbl.config(
+            text=f"{t.tm_hour:02d}:{t.tm_min:02d}:{t.tm_sec:02d}")
+
+    #  test UI 
+
+    def _open_test_ui(self):
+        win = tk.Toplevel(self.root)
+        win.title(f"Test UI – Train {self.active+1}")
+        win.configure(bg=C["bg_dark"])
+        win.geometry("720x760")
+
+        tk.Label(win, text=f"TEST UI  –  TRAIN {self.active+1}",
+                 bg=C["bg_header"], fg=C["accent2"],
+                 font=("Courier", 13, "bold"), pady=10
+                 ).pack(fill=tk.X)
+
+        body = tk.Frame(win, bg=C["bg_dark"])
+        body.pack(fill=tk.BOTH, expand=True, padx=10, pady=8)
+
+        # left inputs, right outputs
+        lf = tk.LabelFrame(body, text="  INPUTS", bg=C["bg_panel"],
+                            fg=C["accent2"], font=("Courier", 10, "bold"),
+                            padx=8, pady=8, relief=tk.FLAT,
+                            highlightbackground=C["border"], highlightthickness=1)
+        lf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0,5))
+
+        rf = tk.LabelFrame(body, text="  OUTPUTS", bg=C["bg_panel"],
+                            fg=C["ok"], font=("Courier", 10, "bold"),
+                            padx=8, pady=8, relief=tk.FLAT,
+                            highlightbackground=C["border"], highlightthickness=1)
+        rf.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(5,0))
+
+        t = self.T
+        DOOR = {0:"Closed",1:"Right",2:"Left",3:"Both"}
+        light = "External" if t.headlights else ("Internal" if t.interior_lights else "Off")
+
+        in_rows = [
+            ("─ From Train Model ─",  None),
+            ("Commanded Spd (km/hr)", f"{t.commanded_speed*1.60934:.1f}"),
+            ("Authority (km)",        f"{t.authority/1000:.3f}"),
+            ("Actual Speed (km/hr)",  f"{t.current_speed*1.60934:.1f}"),
+            ("Power Fault",           str(t.fault_power)),
+            ("Brake Fault",           str(t.fault_brake)),
+            ("Signal Fault",          str(t.fault_signal)),
+            ("Next Station",          t.next_station),
+            ("Passengers",            str(t.passengers)),
+            ("─ From Engineer ─",     None),
+            ("Kp",                    str(t.kp)),
+            ("Ki",                    str(t.ki)),
+            ("─ From Driver ─",       None),
+            ("Emergency Brake",       str(t.emergency_brake)),
+            ("Service Brake",         str(t.service_brake)),
+            ("Door State",            DOOR.get(t.doors_state,"Closed")),
+            ("Mode",                  "Auto" if t.automatic_mode else "Manual"),
+            ("Set Speed (km/hr)",     f"{t.manual_speed_target*1.60934:.0f}"),
+            ("Lights",                light),
+        ]
+
+        out_rows = [
+            ("─ To Driver ─",         None),
+            ("Speed Display (km/hr)", f"{t.current_speed*1.60934:.1f}"),
+            ("Authority (km)",        f"{t.authority/1000:.3f}"),
+            ("Authority (m)",         f"{t.authority:.0f}"),
+            ("Next Station",          t.next_station),
+            ("Power Command (W)",     f"{t.power_output:,.0f}"),
+            ("─ To Train Model ─",    None),
+            ("Velocity Cmd (km/hr)",  f"{t.commanded_speed*1.60934:.1f}"),
+            ("Door",                  DOOR.get(t.doors_state,"Closed")),
+            ("Lights",                light),
+            ("Emergency Brake",       str(t.emergency_brake)),
+            ("Temperature (°F)",      str(t.cabin_temp)),
+            ("Service Brake",         str(t.service_brake)),
+        ]
+
+        def _rows(parent, rows, val_bg):
+            for lbl, val in rows:
+                if val is None:
+                    tk.Label(parent, text=lbl, bg=C["accent_dim"],
+                             fg="white", font=("Courier", 8, "bold"),
+                             anchor="w", padx=4).pack(fill=tk.X, pady=(6,1))
+                else:
+                    r = tk.Frame(parent, bg=C["bg_panel"]); r.pack(fill=tk.X, pady=1)
+                    tk.Label(r, text=lbl, bg=C["bg_panel"], fg=C["text_dim"],
+                             font=("Courier", 8), width=22, anchor="w"
+                             ).pack(side=tk.LEFT)
+                    tk.Label(r, text=f"[{val}]", bg=val_bg, fg=C["text"],
+                             font=("Courier", 8, "bold"), width=14, anchor="center",
+                             relief=tk.FLAT, padx=4
+                             ).pack(side=tk.RIGHT)
+
+        _rows(lf, in_rows,  "#1a1000")
+        _rows(rf, out_rows, "#001a00")
+
+    #  run 
+
     def run(self):
-        """Start the GUI"""
-        print("\n" + "="*70)
-        print("TRAIN CONTROLLER - Starting...")
-        print("="*70)
-        print("\n✓ Controller initialized")
-        print("✓ UI ready")
-        print("\n📖 Instructions:")
-        print("  1. Click '📊 Open Test UI' to see all values in real-time")
-        print("  2. Use Testing Controls to set Commanded Speed and Authority")
-        print("  3. Click START SIMULATION to see train move")
-        print("  4. Watch Test UI window - all values update automatically!")
-        print("\n" + "="*70 + "\n")
-        
         self.root.mainloop()
-        
-        print("\n✓ Train Controller closed.\n")
 
-
-
-# MAIN PROGRAM
 
 
 if __name__ == "__main__":
-    app = TrainControllerUI()
+    app = TrainControllerApp()
     app.run()
