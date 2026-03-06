@@ -8,22 +8,23 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor
 
-import train_frontend_test
-
-#colors used.
-BG_PAGE        = "#F7F8FA"
-BG_CARD        = "#FFFFFF"
-BG_HEADER      = "#FFFFFF"
-BORDER_CARD    = "#E4E7ED"
-TEXT_PRIMARY   = "#111827"
-TEXT_SECONDARY = "#6B7280"
-TEXT_VALUE     = "#111827"
-ACCENT_BLUE    = "#2563EB"
-ACCENT_RED     = "#DC2626"
-ACCENT_RED_BG  = "#FEF2F2"
-ACCENT_AMBER   = "#D97706"
+# colors used
+BG_PAGE         = "#F7F8FA"
+BG_CARD         = "#FFFFFF"
+BG_HEADER       = "#FFFFFF"
+BORDER_CARD     = "#E4E7ED"
+TEXT_PRIMARY    = "#111827"
+TEXT_SECONDARY  = "#6B7280"
+TEXT_VALUE      = "#111827"
+ACCENT_BLUE     = "#2563EB"
+ACCENT_RED      = "#DC2626"
+ACCENT_RED_BG   = "#FEF2F2"
+ACCENT_AMBER    = "#D97706"
 ACCENT_AMBER_BG = "#FFFBEB"
-DIVIDER        = "#F3F4F6"
+DIVIDER         = "#F3F4F6"
+ADS_BG          = "#F0F4FF"
+ADS_BORDER      = "#BFCFFF"
+ADS_TEXT        = "#6B7280"
 
 
 def cardShadow(widget):
@@ -40,14 +41,14 @@ class TrainControlUI(QMainWindow):
     def __init__(self, trainModel=None):
         super().__init__()
 
-        self.trainModel        = trainModel
-        self.emergencyBrakeOn  = False
-        self.engineFaultOn     = False
-        self.brakeFaultOn      = False
-        self.powerFaultOn      = False
+        self.trainModel       = trainModel
+        self.emergencyBrakeOn = False
+        self.engineFaultOn    = False
+        self.brakeFaultOn     = False
+        self.powerFaultOn     = False
 
         self.setWindowTitle("Train Model")
-        self.setFixedSize(1920, 1360)
+        self.setFixedSize(2160, 1600)
         self.setStyleSheet(f"background-color: {BG_PAGE};")
 
         central = QWidget()
@@ -56,7 +57,7 @@ class TrainControlUI(QMainWindow):
         rootLayout.setContentsMargins(0, 0, 0, 0)
         rootLayout.setSpacing(0)
 
-        #header
+        # ── header ───────────────────────────────────────────────────────────
         headerFrame = QFrame()
         headerFrame.setFixedHeight(116)
         headerFrame.setStyleSheet(f"""
@@ -76,31 +77,31 @@ class TrainControlUI(QMainWindow):
 
         rootLayout.addWidget(headerFrame)
 
-        #page body
+        # ── page body ─────────────────────────────────────────────────────────
         bodyWidget = QWidget()
         bodyWidget.setStyleSheet(f"background-color: {BG_PAGE};")
         bodyLayout = QVBoxLayout(bodyWidget)
         bodyLayout.setContentsMargins(48, 40, 48, 40)
-        bodyLayout.setSpacing(32)
+        bodyLayout.setSpacing(28)
         rootLayout.addWidget(bodyWidget, stretch=1)
 
-        # train and cabin info
+        # ── row 1: train info + cabin ─────────────────────────────────────────
         topRow = QWidget()
         topRow.setStyleSheet("background: transparent;")
         topLayout = QHBoxLayout(topRow)
         topLayout.setContentsMargins(0, 0, 0, 0)
-        topLayout.setSpacing(32)
+        topLayout.setSpacing(28)
 
-        # full train info box
+        # train info card
         trainCard = self._makeCard()
         trainCardLayout = QVBoxLayout(trainCard)
         trainCardLayout.setContentsMargins(40, 32, 40, 32)
         trainCardLayout.setSpacing(0)
         trainCardLayout.addWidget(self._cardTitle("Train Info"))
-        trainCardLayout.addSpacing(24)
+        trainCardLayout.addSpacing(20)
         trainGrid = QGridLayout()
         trainGrid.setSpacing(0)
-        trainGrid.setVerticalSpacing(4)
+        trainGrid.setVerticalSpacing(10)
         trainCardLayout.addLayout(trainGrid)
 
         self.speedLabel      = self._addStatRow(trainGrid, 0, "Speed",        "0.00 mph")
@@ -108,38 +109,60 @@ class TrainControlUI(QMainWindow):
         self.stationLabel    = self._addStatRow(trainGrid, 2, "Next Station", "—")
         self.distanceLabel   = self._addStatRow(trainGrid, 3, "Distance",     "0.00 mi")
         self.powerLabel      = self._addStatRow(trainGrid, 4, "Power",        "0.00 kW")
-        self.accelLabel      = self._addStatRow(trainGrid, 5, "Acceleration", "0.00 ft/s²")
+        self.accelLabel      = self._addStatRow(trainGrid, 5, "Acceleration", "0.0000 ft/s²")
         topLayout.addWidget(trainCard, stretch=3)
 
-        # cabin info box
+        # cabin card — includes passengers on board
         cabinCard = self._makeCard()
         cabinCardLayout = QVBoxLayout(cabinCard)
         cabinCardLayout.setContentsMargins(40, 32, 40, 32)
         cabinCardLayout.setSpacing(0)
         cabinCardLayout.addWidget(self._cardTitle("Cabin"))
-        cabinCardLayout.addSpacing(24)
+        cabinCardLayout.addSpacing(20)
         cabinGrid = QGridLayout()
         cabinGrid.setSpacing(0)
-        cabinGrid.setVerticalSpacing(4)
+        cabinGrid.setVerticalSpacing(10)
         cabinCardLayout.addLayout(cabinGrid)
 
-        self.tempLabel           = self._addStatRow(cabinGrid, 0, "Temperature",     "68.0 °F")
-        self.interiorLightsLabel = self._addStatRow(cabinGrid, 1, "Interior Lights", "Off")
-        self.exteriorLightsLabel = self._addStatRow(cabinGrid, 2, "Exterior Lights", "Off")
-        self.doorLabel           = self._addStatRow(cabinGrid, 3, "Doors",           "Closed")
+        self.tempLabel           = self._addStatRow(cabinGrid, 0, "Temperature",        "68.0 °F")
+        self.interiorLightsLabel = self._addStatRow(cabinGrid, 1, "Interior Lights",    "Off")
+        self.exteriorLightsLabel = self._addStatRow(cabinGrid, 2, "Exterior Lights",    "Off")
+        self.doorLabel           = self._addStatRow(cabinGrid, 3, "Doors",              "Closed")
+        self.passengersLabel     = self._addStatRow(cabinGrid, 4, "Passengers On Board","0")
         cabinCardLayout.addStretch()
         topLayout.addWidget(cabinCard, stretch=2)
 
         bodyLayout.addWidget(topRow, stretch=3)
 
-        #murphy and emergency brake input boxes
+        # row 2: beacon data
+        middleRow = QWidget()
+        middleRow.setStyleSheet("background: transparent;")
+        middleLayout = QHBoxLayout(middleRow)
+        middleLayout.setContentsMargins(0, 0, 0, 0)
+        middleLayout.setSpacing(28)
+
+        beaconCard = self._makeCard()
+        beaconCardLayout = QVBoxLayout(beaconCard)
+        beaconCardLayout.setContentsMargins(40, 32, 40, 32)
+        beaconCardLayout.setSpacing(0)
+        beaconGrid = QGridLayout()
+        beaconGrid.setSpacing(0)
+        beaconGrid.setVerticalSpacing(2)
+        beaconCardLayout.addLayout(beaconGrid)
+        self.beaconDataLabel = self._addStatRow(beaconGrid, 0, "Beacon String", "—")
+        beaconCardLayout.addStretch()
+        beaconCard.setMaximumHeight(120)
+        middleLayout.addWidget(beaconCard)
+        bodyLayout.addWidget(middleRow, stretch=1)
+
+        # row 3: passenger emergency brake + murphy faults
         bottomRow = QWidget()
         bottomRow.setStyleSheet("background: transparent;")
         bottomLayout = QHBoxLayout(bottomRow)
         bottomLayout.setContentsMargins(0, 0, 0, 0)
-        bottomLayout.setSpacing(32)
+        bottomLayout.setSpacing(28)
 
-        # passenger box
+        # passenger emergency brake card
         passengerCard = self._makeCard()
         passengerInner = QVBoxLayout(passengerCard)
         passengerInner.setContentsMargins(40, 32, 40, 32)
@@ -156,7 +179,7 @@ class TrainControlUI(QMainWindow):
         passengerInner.addWidget(self.emergencyBtn)
         bottomLayout.addWidget(passengerCard, stretch=2)
 
-        # murphy faults box
+        # murphy faults card
         murphyCard = self._makeCard()
         murphyInner = QVBoxLayout(murphyCard)
         murphyInner.setContentsMargins(40, 32, 40, 32)
@@ -164,13 +187,31 @@ class TrainControlUI(QMainWindow):
         murphyInner.addWidget(self._cardTitle("Faults (Murphy)"))
         murphyInner.addSpacing(8)
 
-        self.engineFaultBtn = self._makeFaultBtn("Engine Fault",  self.toggleEngineFault)
-        self.brakeFaultBtn  = self._makeFaultBtn("Brake Fault",   self.toggleBrakeFault)
-        self.powerFaultBtn  = self._makeFaultBtn("Power Fault",   self.togglePowerFault)
+        self.engineFaultBtn = self._makeFaultBtn("Engine Fault", self.toggleEngineFault)
+        self.brakeFaultBtn  = self._makeFaultBtn("Brake Fault",  self.toggleBrakeFault)
+        self.powerFaultBtn  = self._makeFaultBtn("Power Fault",  self.togglePowerFault)
         murphyInner.addWidget(self.engineFaultBtn)
         murphyInner.addWidget(self.brakeFaultBtn)
         murphyInner.addWidget(self.powerFaultBtn)
         bottomLayout.addWidget(murphyCard, stretch=3)
+
+        # ads card
+        adsCard = QWidget()
+        adsCard.setStyleSheet(f"""
+            QWidget {{
+                background-color: {ADS_BG};
+                border: 2px dashed {ADS_BORDER};
+                border-radius: 24px;
+            }}
+        """)
+        adsCardLayout = QVBoxLayout(adsCard)
+        adsCardLayout.setContentsMargins(40, 24, 40, 24)
+        adsPlaceholder = QLabel("[ Ad Content Placeholder ]")
+        adsPlaceholder.setFont(QFont("Segoe UI", 22))
+        adsPlaceholder.setAlignment(Qt.AlignCenter)
+        adsPlaceholder.setStyleSheet(f"color: {ADS_BORDER}; background: transparent; border: none;")
+        adsCardLayout.addWidget(adsPlaceholder)
+        bottomLayout.addWidget(adsCard, stretch=2)
 
         bodyLayout.addWidget(bottomRow, stretch=2)
 
@@ -179,7 +220,7 @@ class TrainControlUI(QMainWindow):
         self.refreshTimer.timeout.connect(self.refreshFromModel)
         self.refreshTimer.start(100)
 
-    # ui helpers
+    # ── ui helpers ────────────────────────────────────────────────────────────
 
     def _makeCard(self):
         # creates a white rounded card with a subtle border and shadow
@@ -211,13 +252,13 @@ class TrainControlUI(QMainWindow):
     def _addStatRow(self, grid, row, labelText, valueText):
         # adds a greyed label + coloured value pair inside a grid layout
         lbl = QLabel(labelText)
-        lbl.setFont(QFont("Segoe UI", 20))
-        lbl.setFixedHeight(72)
+        lbl.setFont(QFont("Segoe UI", 16))
+        lbl.setFixedHeight(68)
         lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
 
         val = QLabel(valueText)
-        val.setFont(QFont("Segoe UI", 20, QFont.Bold))
-        val.setFixedHeight(72)
+        val.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        val.setFixedHeight(68)
         val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         val.setStyleSheet(f"color: {TEXT_VALUE}; background: transparent; border: none;")
 
@@ -235,7 +276,6 @@ class TrainControlUI(QMainWindow):
         return btn
 
     def _emergencyStyle(self, isActive):
-        # css for the emergency brake button
         if isActive:
             return (f"QPushButton {{ background-color: {ACCENT_RED}; color: white; "
                     f"border: none; border-radius: 16px; font-size: 22px; }}"
@@ -245,7 +285,6 @@ class TrainControlUI(QMainWindow):
                 f"QPushButton:hover {{ background-color: #FEE2E2; }}")
 
     def _faultStyle(self, isActive):
-        # css for fault toggle buttons
         if isActive:
             return (f"QPushButton {{ background-color: {ACCENT_AMBER_BG}; color: {ACCENT_AMBER}; "
                     f"border: 1.5px solid #FDE68A; border-radius: 12px; }}"
@@ -254,7 +293,7 @@ class TrainControlUI(QMainWindow):
                 f"border: 1px solid {BORDER_CARD}; border-radius: 12px; }}"
                 f"QPushButton:hover {{ background-color: {DIVIDER}; color: {TEXT_PRIMARY}; }}")
 
-    # toggles
+    # ── toggles ───────────────────────────────────────────────────────────────
 
     def toggleEmergencyBrake(self):
         self.emergencyBrakeOn = not self.emergencyBrakeOn
@@ -280,23 +319,27 @@ class TrainControlUI(QMainWindow):
         if self.trainModel:
             self.trainModel.hasPowerFault = self.powerFaultOn
 
-    # refreshes ui to match backend caluclations
+    # ── refresh display from backend ──────────────────────────────────────────
 
     def refreshFromModel(self):
         if not self.trainModel:
             return
         m = self.trainModel
-        self.speedLabel.setText("%.2f mph"   % m.displayCurrentSpeedMph())
-        self.speedLimitLabel.setText("%.2f mph"   % m.displaySpeedLimitMph())
-        self.distanceLabel.setText("%.2f mi"   % m.displayDistanceTraveledMiles())
-        self.powerLabel.setText("%.2f kW"    % m.displayRequestedTractionPowerKw())
-        self.accelLabel.setText("%.4f m/s²" % m.displayCurrentAccelMps2())
-        self.tempLabel.setText("%.1f °F"    % m.displayCabinTemperatureF())
-        self.interiorLightsLabel.setText("On" if m.areInternalLightsOn else "Off")
-        self.exteriorLightsLabel.setText("On" if m.areExternalLightsOn else "Off")
+
+        # train info — acceleration now in ft/s²
+        self.speedLabel.setText("%.2f mph"    % m.displayCurrentSpeedMph())
+        self.speedLimitLabel.setText("%.2f mph"    % m.displaySpeedLimitMph())
+        self.distanceLabel.setText("%.2f mi"    % m.displayDistanceTraveledMiles())
+        self.powerLabel.setText("%.2f kW"     % m.displayRequestedTractionPowerKw())
+        self.accelLabel.setText("%.4f ft/s²"  % m.displayCurrentAccelFps2())
         self.stationLabel.setText(m.approachingStation if m.approachingStation else "—")
 
-        # door status from individual door states
+        # cabin
+        self.tempLabel.setText("%.1f °F"      % m.displayCabinTemperatureF())
+        self.interiorLightsLabel.setText("On" if m.areInternalLightsOn else "Off")
+        self.exteriorLightsLabel.setText("On" if m.areExternalLightsOn else "Off")
+        self.passengersLabel.setText(str(m.onboardPassengers))
+
         if m.isLeftDoorOpen and m.isRightDoorOpen:
             self.doorLabel.setText("Both Open")
         elif m.isLeftDoorOpen:
@@ -305,6 +348,10 @@ class TrainControlUI(QMainWindow):
             self.doorLabel.setText("Right Open")
         else:
             self.doorLabel.setText("Closed")
+
+        # beacon data — show dash when empty
+        beacon = m.beaconData if m.beaconData else "—"
+        self.beaconDataLabel.setText(beacon)
 
     def setTrainModel(self, trainModel):
         self.trainModel = trainModel

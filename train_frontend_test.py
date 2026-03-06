@@ -4,22 +4,22 @@ import sys
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QGridLayout, QHBoxLayout, QVBoxLayout, QDoubleSpinBox, QSpinBox,
-    QScrollArea, QGraphicsDropShadowEffect
+    QLineEdit, QScrollArea, QGraphicsDropShadowEffect
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor
 
 
 # colors
-BG_PAGE      = "#F7F8FA"
-BG_CARD      = "#FFFFFF"
-BG_HEADER    = "#FFFFFF"
-BORDER_CARD  = "#E4E7ED"
-TEXT_PRIMARY = "#111827"
-TEXT_SECONDARY = "#6B7280"
-DIVIDER      = "#F3F4F6"
-ACCENT_BLUE  = "#2563EB"
-ACCENT_GREEN = "#16A34A"
+BG_PAGE         = "#F7F8FA"
+BG_CARD         = "#FFFFFF"
+BG_HEADER       = "#FFFFFF"
+BORDER_CARD     = "#E4E7ED"
+TEXT_PRIMARY    = "#111827"
+TEXT_SECONDARY  = "#6B7280"
+DIVIDER         = "#F3F4F6"
+ACCENT_BLUE     = "#2563EB"
+ACCENT_GREEN    = "#16A34A"
 ACCENT_GREEN_BG = "#F0FDF4"
 
 
@@ -37,16 +37,16 @@ class TrainModelTestUI(QMainWindow):
     def __init__(self, trainModel=None):
         super().__init__()
 
-        self.trainModel      = trainModel
-        self.brokenRailOn    = False
-        self.trackCircuitOn  = False
-        self.trackPowerOn    = False
-        self.serviceBrakeOn  = False
+        self.trainModel       = trainModel
+        self.brokenRailOn     = False
+        self.trackCircuitOn   = False
+        self.trackPowerOn     = False
+        self.serviceBrakeOn   = False
         self.emergencyBrakeOn = False
         self.externalLightsOn = False
         self.internalLightsOn = False
-        self.rightDoorOn     = False
-        self.leftDoorOn      = False
+        self.rightDoorOn      = False
+        self.leftDoorOn       = False
 
         self.setWindowTitle("Train Model Test")
         self.setFixedSize(1920, 990)
@@ -128,8 +128,11 @@ class TrainModelTestUI(QMainWindow):
 
         row = 0
 
+        # track model inputs
         row = self._addSectionHeader(grid, row, "Track Model")
         self.commandedSpeedInput = self._addNumericRow(grid, row, "Commanded Speed", "km/hr", 0, 200, 1, 1)
+        row += 1
+        self.speedLimitInput = self._addNumericRow(grid, row, "Speed Limit", "km/hr", 0, 200, 1, 1)
         row += 1
         self.commandedAuthorityInput = self._addNumericRow(grid, row, "Commanded Authority", "km", 0, 9999, 0.1, 2)
         row += 1
@@ -147,7 +150,10 @@ class TrainModelTestUI(QMainWindow):
         row += 1
         self.passengersInput = self._addIntRow(grid, row, "Passengers Boarded", 0, 300)
         row += 1
+        self.beaconDataInput = self._addStringRow(grid, row, "Beacon Data", "string")
+        row += 1
 
+        # train controller inputs
         row = self._addSectionHeader(grid, row, "Train Controller")
         self.temperatureInput = self._addNumericRow(grid, row, "Temperature", "\u00b0C", -40, 80, 0.5, 1)
         row += 1
@@ -168,6 +174,7 @@ class TrainModelTestUI(QMainWindow):
 
         # seed defaults matching backend initial values
         self.commandedSpeedInput.setValue(70)
+        self.speedLimitInput.setValue(70)
         self.commandedAuthorityInput.setValue(100)
         self.accelLimitInput.setValue(12960)
         self.decelLimitInput.setValue(15552)
@@ -175,6 +182,7 @@ class TrainModelTestUI(QMainWindow):
 
         # wire all spinboxes to live-push on every change
         self.commandedSpeedInput.valueChanged.connect(self.pushToModel)
+        self.speedLimitInput.valueChanged.connect(self.pushToModel)
         self.commandedAuthorityInput.valueChanged.connect(self.pushToModel)
         self.gradeInput.valueChanged.connect(self.pushToModel)
         self.accelLimitInput.valueChanged.connect(self.pushToModel)
@@ -182,6 +190,7 @@ class TrainModelTestUI(QMainWindow):
         self.passengersInput.valueChanged.connect(self.pushToModel)
         self.temperatureInput.valueChanged.connect(self.pushToModel)
         self.powerCommandInput.valueChanged.connect(self.pushToModel)
+        self.beaconDataInput.textChanged.connect(self.pushToModel)
 
         scroll.setWidget(container)
         inputsOuterLayout.addWidget(scroll)
@@ -234,14 +243,13 @@ class TrainModelTestUI(QMainWindow):
         orow += 1
 
         orow = self._addSectionHeader(outputsGrid, orow, "Train Controller")
-        self.outCtrlSpeedLabel      = self._addOutputRow(outputsGrid, orow, "Actual Speed", "km/hr")
+        self.outCtrlSpeedLabel  = self._addOutputRow(outputsGrid, orow, "Actual Speed",        "km/hr")
         orow += 1
-        self.outPassengersLabel     = self._addOutputRow(outputsGrid, orow, "Passengers On Board", "count")
+        self.outPassengersLabel = self._addOutputRow(outputsGrid, orow, "Passengers On Board", "count")
         orow += 1
-        self.outAuthorityLabel      = self._addOutputRow(outputsGrid, orow, "Authority", "km")
+        self.outAuthorityLabel  = self._addOutputRow(outputsGrid, orow, "Authority",            "km")
         orow += 1
 
-        # push remaining space to bottom
         outputsGrid.setRowStretch(orow, 1)
 
         outputsScroll.setWidget(outputsContainer)
@@ -256,10 +264,9 @@ class TrainModelTestUI(QMainWindow):
         self.refreshTimer.timeout.connect(self.refreshFromModel)
         self.refreshTimer.start(100)
 
-    # helpers
+    # ── helpers ───────────────────────────────────────────────────────────────
 
     def _cardTitle(self, text):
-        # all-caps section label with a divider underline
         lbl = QLabel(text.upper())
         lbl.setFont(QFont("Segoe UI", 12, QFont.Bold))
         lbl.setStyleSheet(f"""
@@ -273,7 +280,6 @@ class TrainModelTestUI(QMainWindow):
         return lbl
 
     def _addSectionHeader(self, grid, row, text):
-        # greyed subheading to separate input/output groups
         lbl = QLabel(text)
         lbl.setFont(QFont("Segoe UI", 13, QFont.Bold))
         lbl.setFixedHeight(48)
@@ -288,7 +294,6 @@ class TrainModelTestUI(QMainWindow):
         return row + 1
 
     def _addNumericRow(self, grid, row, labelText, unitText, minVal, maxVal, step, decimals):
-        # label + spinbox and unit in one grid row
         lbl = QLabel(labelText)
         lbl.setFont(QFont("Segoe UI", 15))
         lbl.setFixedHeight(51)
@@ -326,7 +331,6 @@ class TrainModelTestUI(QMainWindow):
         return spin
 
     def _addIntRow(self, grid, row, labelText, minVal, maxVal):
-        # label and integer spinbox + unit in one grid row
         lbl = QLabel(labelText)
         lbl.setFont(QFont("Segoe UI", 15))
         lbl.setFixedHeight(51)
@@ -361,8 +365,41 @@ class TrainModelTestUI(QMainWindow):
         grid.addWidget(unitLbl, row, 2)
         return spin
 
+    def _addStringRow(self, grid, row, labelText, unitText):
+        # label + free-text QLineEdit for string inputs (e.g. beacon data)
+        lbl = QLabel(labelText)
+        lbl.setFont(QFont("Segoe UI", 15))
+        lbl.setFixedHeight(51)
+        lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
+
+        edit = QLineEdit()
+        edit.setFixedHeight(45)
+        edit.setFont(QFont("Segoe UI", 15))
+        edit.setAlignment(Qt.AlignRight)
+        edit.setPlaceholderText("—")
+        edit.setStyleSheet(f"""
+            QLineEdit {{
+                background: {BG_PAGE};
+                color: {TEXT_PRIMARY};
+                border: 1px solid {BORDER_CARD};
+                border-radius: 7px;
+                padding: 3px 9px;
+            }}
+            QLineEdit:focus {{ border: 1.5px solid {ACCENT_BLUE}; }}
+        """)
+
+        unitLbl = QLabel(unitText)
+        unitLbl.setFont(QFont("Segoe UI", 13))
+        unitLbl.setFixedHeight(51)
+        unitLbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        unitLbl.setStyleSheet(f"color: #9CA3AF; background: transparent; border: none; padding-left: 6px;")
+
+        grid.addWidget(lbl,     row, 0)
+        grid.addWidget(edit,    row, 1)
+        grid.addWidget(unitLbl, row, 2)
+        return edit
+
     def _addToggleRow(self, grid, row, labelText, callback):
-        # label and ON/OFF toggle button + unit in one grid row
         lbl = QLabel(labelText)
         lbl.setFont(QFont("Segoe UI", 15))
         lbl.setFixedHeight(51)
@@ -387,7 +424,6 @@ class TrainModelTestUI(QMainWindow):
         return btn
 
     def _addOutputRow(self, grid, row, labelText, unitText):
-        # read-only display row — same layout as inputs but greyed out and non-interactive
         lbl = QLabel(labelText)
         lbl.setFont(QFont("Segoe UI", 15))
         lbl.setFixedHeight(51)
@@ -417,7 +453,6 @@ class TrainModelTestUI(QMainWindow):
         return val
 
     def _toggleStyle(self, isOn):
-        # css for the ON/OFF toggle buttons
         if isOn:
             return (f"QPushButton {{ background-color: {ACCENT_GREEN_BG}; color: {ACCENT_GREEN}; "
                     f"border: 1.5px solid #BBF7D0; border-radius: 7px; }}"
@@ -427,12 +462,11 @@ class TrainModelTestUI(QMainWindow):
                 f"QPushButton:hover {{ background-color: {DIVIDER}; }}")
 
     def _setToggle(self, btn, isOn):
-        # updates a toggle button's text and style to match its state
         btn.setText("ON" if isOn else "OFF")
         btn.setChecked(isOn)
         btn.setStyleSheet(self._toggleStyle(isOn))
 
-    # read backend state and update output labels
+    # ── read backend, update outputs ──────────────────────────────────────────
 
     def refreshFromModel(self):
         if not self.trainModel:
@@ -440,15 +474,17 @@ class TrainModelTestUI(QMainWindow):
         m = self.trainModel
         self.outTrackSpeedLabel.setText("%.2f" % m.getCurrentSpeedKmh())
         self.outCtrlSpeedLabel.setText("%.2f"  % m.getCurrentSpeedKmh())
+        self.outPassengersLabel.setText("%d"   % m.getOnboardPassengers())
         self.outAuthorityLabel.setText("%.3f"  % m.getCommandedAuthorityKm())
 
-    # give the values to backend
+    # ── push all inputs to backend ────────────────────────────────────────────
 
     def pushToModel(self):
         if not self.trainModel:
             return
         m = self.trainModel
         m.commandedSpeedKmh          = self.commandedSpeedInput.value()
+        m.speedLimitKmh              = self.speedLimitInput.value()
         m.commandedAuthorityKm       = self.commandedAuthorityInput.value()
         m.trackGradePercent          = self.gradeInput.value()
         m.trackAccelerationLimitKmh2 = self.accelLimitInput.value()
@@ -456,8 +492,9 @@ class TrainModelTestUI(QMainWindow):
         m.boardingPassengerCount     = self.passengersInput.value()
         m.cabinTemperatureC          = self.temperatureInput.value()
         m.requestedTractionPowerW    = self.powerCommandInput.value()
+        m.beaconData                 = self.beaconDataInput.text()
 
-    # give the toggle values to backend
+    # ── toggle handlers ───────────────────────────────────────────────────────
 
     def onBrokenRailToggled(self):
         self.brokenRailOn = not self.brokenRailOn

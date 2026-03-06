@@ -29,7 +29,9 @@ class TrainModel:
 
         # inputs from track model
         self.commandedSpeedKmh          = 70.0
+        self.speedLimitKmh              = 70.0
         self.commandedAuthorityKm       = 0.0
+        self.beaconData                 = ""
         self.trackGradePercent          = 0.0
         self.trackDecelerationLimitKmh2 = 0.0
         self.trackAccelerationLimitKmh2 = 0.0
@@ -75,7 +77,7 @@ class TrainModel:
         velocityMps = self.currentSpeedKmh / 3.6
 
         # determine which brake mode is active
-        emergencyBrakeActive = (self.isEmergencyBrakeOn or self.isPassengerEmergencyBrakeOn or self.hasEngineFault or self.hasPowerFault or self.isTrackPowerLost or self.isRailBroken or self.isTrackCircuitFailed or self.hasBrakeFault)
+        emergencyBrakeActive = (self.isEmergencyBrakeOn or self.isPassengerEmergencyBrakeOn)
         serviceBrakeActive = self.isServiceBrakeOn and not emergencyBrakeActive
 
         # traction force: F = P/v 
@@ -129,10 +131,12 @@ class TrainModel:
         # trapezoidal velocity integration: v_n = v_{n-1} + (dt/2) * (a_n + a_{n-1})
         newVelocityMps = self._prevVelocityMps + (dt / 2.0) * (newAccelMps2 + self._prevAccelMps2)
         newVelocityMps = max(0.0, newVelocityMps)
+        newVelocityMps = min(newVelocityMps, self.commandedSpeedKmh / 3.6)
 
         # trapezoidal position integration
         distanceDeltaM          = (dt / 2.0) * (newVelocityMps + self._prevVelocityMps)
         self.distanceTraveledKm += distanceDeltaM / 1000.0
+        self.commandedAuthorityKm = max(0.0, self.commandedAuthorityKm - distanceDeltaM / 1000.0)
 
         # update state for this tick
         self.currentSpeedKmh        = newVelocityMps * 3.6
@@ -177,7 +181,7 @@ class TrainModel:
     def displayCommandedSpeedMph(self):        
         return kmhToMph(self.commandedSpeedKmh)
     def displaySpeedLimitMph(self):            
-        return kmhToMph(self.commandedSpeedKmh)
+        return kmhToMph(self.speedLimitKmh)
     def displayDistanceTraveledMiles(self):    
         return kmToMiles(self.distanceTraveledKm)
     def displayRemainingAuthorityMiles(self):  
@@ -185,6 +189,8 @@ class TrainModel:
     def displayCabinTemperatureF(self):        
         return cToF(self.cabinTemperatureC)
     def displayCurrentAccelMps2(self):        
-        return (self.currentAccelMps2)
+        return self.currentAccelMps2
+    def displayCurrentAccelFps2(self):        
+        return ms2ToFps2(self.currentAccelMps2)
     def displayRequestedTractionPowerKw(self): 
         return self.requestedTractionPowerW / 1000.0
