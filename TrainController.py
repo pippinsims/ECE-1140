@@ -1,7 +1,9 @@
-import os, sys, math, time
+import os, sys, time, json, socket, threading
 os.environ['TK_SILENCE_DEPRECATION'] = '1'
 import tkinter as tk
 from tkinter import ttk
+
+from train_controller_backend import TrainController
 
 
 #  COLOR PALETTE  –  Red & Black Industrial
@@ -25,114 +27,6 @@ C = {
     "deselect":   "#2a2a2a",
     "train_sel":  "#3a0a0a",
 }
-
-
-#  TRAIN CONTROLLER LOGIC
-
-
-class TrainController:
-    def __init__(self, train_id=1):
-        self.train_id             = train_id
-        self.current_speed        = 0.0
-        self.commanded_speed      = 0.0
-        self.speed_limit          = 30.0
-        self.authority            = 500.0
-        self.kp                   = 10.0
-        self.ki                   = 8000.0
-        self.power_output         = 0.0
-        self.uk                   = 0.0
-        self.prev_error           = 0.0
-        self.prev_uk              = 0.0
-        self.emergency_brake      = False
-        self.service_brake        = False
-        self.MAX_POWER            = 120_000
-        self.SERVICE_DECEL        = 1.2
-        self.EMERGENCY_DECEL      = 2.73
-        self.fault_power          = False
-        self.fault_brake          = False
-        self.fault_signal         = False
-        self.automatic_mode       = True
-        self.doors_state          = 0
-        self.headlights           = False
-        self.interior_lights      = 0
-        self.cabin_temp           = 70
-        self.passengers           = 0
-        self.next_station         = "YARD"
-        self.driver_power_req     = 0
-        self.manual_speed_target  = 0.0
-
-    def _stop_dist(self, decel):
-        v = self.current_speed * 0.44704
-        return (v**2 / (2*decel) + v*0.1) if decel > 0 else 0.0
-
-    def monitor(self):
-        svc = self._stop_dist(self.SERVICE_DECEL)
-        emg = self._stop_dist(self.EMERGENCY_DECEL)
-        if 5 <= self.authority <= emg:
-            self._activate_ebrake(); return
-        if self.authority <= svc or (self.authority < 0 and self.current_speed > 0):
-            self.service_brake = True; self.driver_power_req = 0; return
-        if self.current_speed > self.speed_limit:
-            self.service_brake = True; self.driver_power_req = 0; return
-        if self.current_speed > self.commanded_speed:
-            self.service_brake = True; self.driver_power_req = 0; return
-        if self.automatic_mode:
-            if self.current_speed < self.commanded_speed and self.current_speed < self.speed_limit:
-                self.driver_power_req = (25 if self.authority<=50 else 50 if self.authority<=60 else 100)
-                self.service_brake = False
-            else:
-                self.driver_power_req = 0; self.service_brake = False
-
-    def calc_power(self, dt):
-        if self.emergency_brake or self.service_brake:
-            self.power_output = 0; self.uk = 0; return 0.0
-        if self.driver_power_req == 0:
-            self.power_output = 0; return 0.0
-        cmd_v = (self.commanded_speed if self.automatic_mode else self.manual_speed_target) * 0.44704
-        err   = cmd_v - self.current_speed * 0.44704
-        self.uk = self.prev_uk + (dt/2)*(err + self.prev_error)
-        pwr = (self.kp*err + self.ki*self.uk) * (self.driver_power_req/100.0)
-        self.prev_error = err; self.prev_uk = self.uk
-        self.power_output = max(0.0, min(float(self.MAX_POWER), pwr))
-        return self.power_output
-
-    def update_auth(self, dt):
-        if self.current_speed > 0:
-            self.authority -= self.current_speed * 0.00044704 * dt * 1000
-
-    def update(self, dt):
-        self.monitor(); self.calc_power(dt); self.update_auth(dt)
-
-    def _activate_ebrake(self):
-        self.emergency_brake = True; self.power_output = 0
-        self.driver_power_req = 0; self.service_brake = False
-
-    def release_ebrake(self):
-        if not (self.fault_power or self.fault_brake or self.fault_signal):
-            self.emergency_brake = False
-
-    def set_power_fault(self, v):
-        self.fault_power = v
-        if v: self._activate_ebrake()
-
-    def set_brake_fault(self, v):
-        self.fault_brake = v
-        if v: self._activate_ebrake()
-
-    def set_signal_fault(self, v):
-        self.fault_signal = v
-        if v: self._activate_ebrake()
-
-    def set_doors(self, s):
-        if self.current_speed == 0: self.doors_state = s
-
-    def set_auto(self): self.automatic_mode = True
-    def set_manual(self, spd):
-        self.automatic_mode = False; self.manual_speed_target = spd; self.driver_power_req = 50
-
-    @property
-    def any_fault(self): return self.fault_power or self.fault_brake or self.fault_signal
-
 
 
 #  UI HELPER FUNCTIONS
@@ -179,10 +73,22 @@ class TrainControllerApp:
 
     NUM_TRAINS = 3
 
-    def __init__(self):
-        self.trains = [TrainController(i+1) for i in range(self.NUM_TRAINS)]
+    def __init__(self, trains=None, show_test_ui_button=True, ipc_host=None, ipc_port=None):
+        if trains is not None:
+            self.trains = list(trains)
+            self.NUM_TRAINS = len(self.trains)
+        else:
+            self.trains = [TrainController(i+1) for i in range(self.NUM_TRAINS)]
         self.active = 0
         self.sim_running = False
+        self._show_test_ui_button = bool(show_test_ui_button)
+
+        self._ipc_host = ipc_host
+        self._ipc_port = int(ipc_port) if ipc_port is not None else None
+        self._ipc_sock = None
+        self._ipc_send_lock = threading.Lock()
+        self._ipc_recv_thread = None
+        self._ipc_running = False
 
         # ── per-train UI state (indexed by train number) ──
         # each list has one entry per train so switching tabs
@@ -194,19 +100,109 @@ class TrainControllerApp:
         self.svc_brake_on    = [False] * self.NUM_TRAINS   # per-train service brake UI state
         self.ebrake_active   = [False] * self.NUM_TRAINS   # per-train e-brake UI state
 
-        # demo data
-        self.trains[0].commanded_speed = 30; self.trains[0].passengers = 42
-        self.trains[0].next_station    = "CENTRAL"
-        self.trains[1].commanded_speed = 25; self.trains[1].passengers = 18
-        self.trains[1].next_station    = "OVERBROOK"; self.trains[1].authority = 1200
-        self.trains[2].commanded_speed = 0;  self.trains[2].passengers = 0
-        self.trains[2].next_station    = "YARD";      self.trains[2].authority = 0
+        if trains is None:
+            # demo data
+            self.trains[0].commanded_speed = 30; self.trains[0].passengers = 42
+            self.trains[0].next_station    = "CENTRAL"
+            self.trains[1].commanded_speed = 25; self.trains[1].passengers = 18
+            self.trains[1].next_station    = "OVERBROOK"; self.trains[1].authority = 1200
+            self.trains[2].commanded_speed = 0;  self.trains[2].passengers = 0
+            self.trains[2].next_station    = "YARD";      self.trains[2].authority = 0
 
         self._build_root()
         self._build_header()
         self._build_body()
         self._build_status_bar()
+
+        if self._ipc_port is not None:
+            self._start_ipc()
+
         self._refresh_all()
+
+    def _start_ipc(self):
+        self._ipc_running = True
+        self._ipc_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._ipc_sock.connect((self._ipc_host or "127.0.0.1", self._ipc_port))
+        self._ipc_sock.setblocking(True)
+
+        def _recv_loop():
+            buf = b""
+            while self._ipc_running:
+                try:
+                    chunk = self._ipc_sock.recv(4096)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while b"\n" in buf:
+                        line, buf = buf.split(b"\n", 1)
+                        if not line:
+                            continue
+                        try:
+                            msg = json.loads(line.decode("utf-8"))
+                        except Exception:
+                            continue
+                        if msg.get("type") != "model":
+                            continue
+                        train_id = int(msg.get("train_id", self.active + 1))
+                        idx = max(0, min(self.NUM_TRAINS - 1, train_id - 1))
+                        t = self.trains[idx]
+                        # Apply model feedback to controller object.
+                        # Only touch plain data fields; Tk widgets update on next refresh tick.
+                        if "current_speed" in msg:
+                            t.current_speed = float(msg["current_speed"])
+                        if "power_output" in msg:
+                            t.power_output = float(msg["power_output"])
+                        if "authority" in msg:
+                            t.authority = float(msg["authority"])
+                        if "emergency_brake" in msg:
+                            t.emergency_brake = bool(msg["emergency_brake"])
+                            self.ebrake_active[idx] = bool(t.emergency_brake)
+                        if "service_brake" in msg:
+                            t.service_brake = bool(msg["service_brake"])
+                            self.svc_brake_on[idx] = bool(t.service_brake)
+                        for k, attr in [("fault_power", "fault_power"),
+                                        ("fault_brake", "fault_brake"),
+                                        ("fault_signal", "fault_signal")]:
+                            if k in msg:
+                                setattr(t, attr, bool(msg[k]))
+                except Exception:
+                    break
+
+        self._ipc_recv_thread = threading.Thread(target=_recv_loop, daemon=True)
+        self._ipc_recv_thread.start()
+
+    def _ipc_send_controller_inputs(self):
+        if not self._ipc_sock:
+            return
+        try:
+            with self._ipc_send_lock:
+                for t in self.trains:
+                    payload = {
+                        "type": "controller",
+                        "train_id": int(getattr(t, "train_id", 0)) or (self.trains.index(t) + 1),
+                        "commanded_speed": float(t.commanded_speed),
+                        "speed_limit": float(t.speed_limit),
+                        "authority": float(t.authority),
+                        "kp": float(t.kp),
+                        "ki": float(t.ki),
+                        "emergency_brake": bool(t.emergency_brake),
+                        "service_brake": bool(t.service_brake),
+                        "doors_state": int(t.doors_state),
+                        "headlights": bool(t.headlights),
+                        "interior_lights": int(t.interior_lights),
+                        "cabin_temp": float(t.cabin_temp),
+                        "passengers": int(t.passengers),
+                        "next_station": str(t.next_station),
+                        "fault_power": bool(t.fault_power),
+                        "fault_brake": bool(t.fault_brake),
+                        "fault_signal": bool(t.fault_signal),
+                        "automatic_mode": bool(t.automatic_mode),
+                        "manual_speed_target": float(t.manual_speed_target),
+                    }
+                    data = (json.dumps(payload) + "\n").encode("utf-8")
+                    self._ipc_sock.sendall(data)
+        except Exception:
+            pass
 
     #  root 
 
@@ -242,8 +238,9 @@ class TrainControllerApp:
         self.clock_lbl = tk.Label(right, text="00:00:00", bg=C["bg_header"],
                                    fg=C["accent2"], font=("Courier", 16, "bold"))
         self.clock_lbl.pack(side=tk.TOP, pady=(8, 0))
-        pill_button(right, "TEST UI", self._open_test_ui,
-                    color=C["accent_dim"], font_size=9, width=8).pack(side=tk.TOP, pady=4)
+        if self._show_test_ui_button:
+            pill_button(right, "TEST UI", self._open_test_ui,
+                        color=C["accent_dim"], font_size=9, width=8).pack(side=tk.TOP, pady=4)
 
     #  body 
 
@@ -531,28 +528,7 @@ class TrainControllerApp:
             lambda: self._sim_fault("signal"), color="#994400", width=9, font_size=9)
         self.sig_sim_btn.pack(side=tk.LEFT, padx=2)
 
-        # 9 ── CTC / Testing Inputs
-        section_title(parent, "CTC / Testing Inputs")
-        ctc_card = card(parent, pad=10)
-        for label, attr, default, cmd in [
-            ("Cmd Speed (mph):", "ctc_spd",  "30",  self._apply_cmd_spd),
-            ("Authority (m):",   "ctc_auth", "500", self._apply_auth),
-            ("Passengers:",      "ctc_pass", "0",   self._apply_pass),
-            ("Sim Speed (mph):", "ctc_cspe", "0",   self._apply_cur_spd),
-        ]:
-            row = tk.Frame(ctc_card, bg=C["bg_card"]); row.pack(fill=tk.X, pady=3)
-            tk.Label(row, text=label, bg=C["bg_card"], fg=C["text_dim"],
-                     font=("Courier", 9), width=18, anchor="w").pack(side=tk.LEFT)
-            ent = tk.Entry(row, font=("Courier", 10), width=7,
-                           bg=C["bg_dark"], fg=C["text_lcd"],
-                           insertbackground=C["accent"],
-                           relief=tk.FLAT, bd=1, justify="center")
-            ent.insert(0, default)
-            ent.pack(side=tk.LEFT, padx=4)
-            setattr(self, attr, ent)
-            pill_button(row, "▶", cmd, width=3, font_size=9).pack(side=tk.LEFT)
-
-        # 10 ── Simulation button
+        # 9 ── Simulation button
         sep(parent)
         sim_f = tk.Frame(parent, bg=C["bg_panel"]); sim_f.pack(fill=tk.X, pady=6, padx=6)
         self.sim_btn = tk.Button(sim_f,
@@ -601,11 +577,9 @@ class TrainControllerApp:
             setattr(self, attr, val_lbl)
 
         _out_row(0, "Actual Speed",   "#5a0000",  "disp_actual_spd",  "mph")
-        _out_row(1, "Set Speed",      "#3a2000",  "disp_set_spd",     "mph")
-        _out_row(2, "Authority",      "#3a3a00",  "disp_authority",   "miles")
-        _out_row(3, "Passengers",     "#003050",  "disp_passengers",  "pax")
-        _out_row(4, "Next Station",   "#1a1a3a",  "disp_next_station","")
-        _out_row(5, "Power Command",  "#003a00",  "disp_power",       "W")
+        _out_row(1, "Passengers",     "#003050",  "disp_passengers",  "pax")
+        _out_row(2, "Next Station",   "#1a1a3a",  "disp_next_station","")
+        _out_row(3, "Power Command",  "#003a00",  "disp_power",       "W")
         out_grid.columnconfigure(0, weight=1)
         out_grid.columnconfigure(1, weight=1)
 
@@ -686,12 +660,14 @@ class TrainControllerApp:
         t = self.T
         if not t.emergency_brake:
             t._activate_ebrake()
+            self.ebrake_active[self.active] = True
             self.ebrake_btn.config(bg="#4a0000",
                 text="⚠  E-BRAKE ACTIVE  –  CLICK TO RELEASE")
             self.ebrake_status.config(text="● ACTIVE", fg=C["fault"])
             self._set_status("EMERGENCY BRAKE ACTIVE", C["fault"])
         else:
             t.release_ebrake()
+            self.ebrake_active[self.active] = bool(t.emergency_brake)
             self.ebrake_btn.config(bg=C["accent"], text="🚨  EMERGENCY BRAKE")
             self.ebrake_status.config(text="● INACTIVE", fg=C["ok"])
             self._set_status("Emergency Brake Released")
@@ -701,6 +677,7 @@ class TrainControllerApp:
     def _on_brake(self):
         t = self.T
         t.service_brake = not t.service_brake
+        self.svc_brake_on[self.active] = bool(t.service_brake)
         if t.service_brake:
             self.brake_btn.config(text="  ON  🔴", bg=C["fault"], fg="white")
             self._set_status("Service Brake Applied", C["warn"])
@@ -826,8 +803,17 @@ class TrainControllerApp:
     #  Kp / Ki (always editable) 
 
     def _ensure_engineer_inputs_enabled(self):
+        moving = self.T.current_speed > 0.0
+        if moving:
+            state = "disabled"
+            bg = "#202020"
+            fg = C["text_dim"]
+        else:
+            state = "normal"
+            bg = C["bg_dark"]
+            fg = C["text_lcd"]
         for w in (self.kp_entry, self.ki_entry):
-            w.config(state="normal", bg=C["bg_dark"], fg=C["text_lcd"])
+            w.config(state=state, bg=bg, fg=fg)
 
     def _on_kp(self):
         self._ensure_engineer_inputs_enabled()
@@ -886,6 +872,9 @@ class TrainControllerApp:
     # ── Simulation ───────────────────────────────────────────
 
     def _toggle_sim(self):
+        if self._ipc_port is not None:
+            self._set_status("Simulation disabled (integrated mode)", C["warn"])
+            return
         self.sim_running = not self.sim_running
         if self.sim_running:
             self.sim_btn.config(text="⏸  STOP SIMULATION", bg=C["accent_dim"])
@@ -916,6 +905,7 @@ class TrainControllerApp:
         self._refresh_mini_cards()
         self._refresh_clock()
         self._ensure_engineer_inputs_enabled()
+        self._ipc_send_controller_inputs()
         self.root.after(100, self._refresh_all)
 
     def _refresh_controls(self):
@@ -926,10 +916,6 @@ class TrainControllerApp:
                  ("Internal" if t.interior_lights else "Off"))
 
         self.disp_actual_spd.config(text=f"{t.current_speed:.1f}")
-        self.disp_set_spd.config(
-            text=f"{t.commanded_speed:.1f}" if t.automatic_mode
-            else f"{t.manual_speed_target:.1f}  ✎")
-        self.disp_authority.config(text=f"{t.authority*0.000621371:.3f}")
         self.disp_passengers.config(text=str(t.passengers))
         self.disp_next_station.config(text=t.next_station)
         self.disp_power.config(text=f"{t.power_output:,.0f}")
@@ -1102,5 +1088,10 @@ class TrainControllerApp:
 
 
 if __name__ == "__main__":
-    app = TrainControllerApp()
+    ipc_host = os.environ.get("TRAIN_IPC_HOST")
+    ipc_port = os.environ.get("TRAIN_IPC_PORT")
+    if ipc_port:
+        app = TrainControllerApp(show_test_ui_button=False, ipc_host=ipc_host or "127.0.0.1", ipc_port=int(ipc_port))
+    else:
+        app = TrainControllerApp()
     app.run()
