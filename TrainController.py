@@ -154,6 +154,8 @@ class TrainControllerApp:
                             t.power_output = float(msg["power_output"])
                         if "authority" in msg:
                             t.authority = float(msg["authority"])
+                        if "next_station" in msg:
+                            t.next_station = str(msg["next_station"])
                         if "emergency_brake" in msg:
                             t.emergency_brake = bool(msg["emergency_brake"])
                             self.ebrake_active[idx] = bool(t.emergency_brake)
