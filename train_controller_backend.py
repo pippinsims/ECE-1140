@@ -145,3 +145,4 @@ class TrainController:
     def any_fault(self):
         return self.fault_power or self.fault_brake or self.fault_signal
 
+
