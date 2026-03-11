@@ -180,6 +180,9 @@ def main():
                         "current_speed": float(system.controller.current_speed),
                         "power_output": float(system.controller.power_output),
                         "authority": float(system.controller.authority),
+                        "distance_travelled_km": float(
+                            getattr(system.controller, "distance_travelled_km", 0.0)
+                        ),
                         "emergency_brake": bool(system.controller.emergency_brake),
                         "service_brake": bool(system.controller.service_brake),
                         "fault_power": bool(system.controller.fault_power),
@@ -203,3 +206,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
