@@ -30,6 +30,8 @@ class TrainController:
         self.manual_speed_target  = 0.0
         # controller-internal auto-applied service brake (eg. overspeed)
         self.auto_service_brake   = False
+        # distance travelled fed from the Train Model (km)
+        self.distance_travelled_km = 0.0
 
     def _stop_dist(self, decel):
         v = self.current_speed * 0.44704
@@ -48,11 +50,18 @@ class TrainController:
             self._activate_ebrake()
             return
 
-        # Speed limit to enforce for overspeed protection
+        # Speed limit to enforce for overspeed protection. In AUTO mode we
+        # track the commanded speed from the Train Model but never exceed the
+        # simulated track speed limit. In MANUAL mode the driver's set speed
+        # is capped by the same track speed limit.
         if self.automatic_mode:
-            speed_cap = self.commanded_speed
+            base_cap = self.commanded_speed
         else:
-            speed_cap = self.manual_speed_target
+            base_cap = self.manual_speed_target
+        if self.speed_limit > 0.0:
+            speed_cap = min(base_cap, self.speed_limit)
+        else:
+            speed_cap = base_cap
 
         # Auto service brake engages only when we are above the cap, and
         # clears once we drop back to or below it.
@@ -63,9 +72,9 @@ class TrainController:
 
         if self.automatic_mode:
             # PI loop target is the commanded speed. We only apply traction
-            # when we are below commanded speed; overspeed is handled by the
-            # auto_service_brake flag above.
-            if self.current_speed < self.commanded_speed:
+            # while we are below the active speed cap; overspeed is handled
+            # by the auto_service_brake flag above.
+            if self.current_speed < speed_cap:
                 self.driver_power_req = (25 if self.authority <= 50 else 50 if self.authority <= 60 else 100)
             else:
                 self.driver_power_req = 0
@@ -144,5 +153,7 @@ class TrainController:
     @property
     def any_fault(self):
         return self.fault_power or self.fault_brake or self.fault_signal
+
+
 
 
