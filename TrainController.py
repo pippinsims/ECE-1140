@@ -154,6 +154,8 @@ class TrainControllerApp:
                             t.power_output = float(msg["power_output"])
                         if "authority" in msg:
                             t.authority = float(msg["authority"])
+                        if "distance_travelled_km" in msg:
+                            t.distance_travelled_km = float(msg["distance_travelled_km"])
                         if "next_station" in msg:
                             t.next_station = str(msg["next_station"])
                         if "emergency_brake" in msg:
@@ -277,7 +279,27 @@ class TrainControllerApp:
         # RIGHT panel
         right = tk.Frame(body, bg=C["bg_panel"])
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self._build_right(right)
+
+        right_canvas = tk.Canvas(right, bg=C["bg_panel"], highlightthickness=0)
+        right_scroll = tk.Scrollbar(right, orient="vertical",
+                                    command=right_canvas.yview,
+                                    bg=C["bg_panel"], troughcolor=C["bg_dark"])
+        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_canvas.configure(yscrollcommand=right_scroll.set)
+
+        self.right_inner = tk.Frame(right_canvas, bg=C["bg_panel"])
+        right_canvas.create_window((0, 0), window=self.right_inner, anchor="nw")
+        self.right_inner.bind(
+            "<Configure>",
+            lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        )
+        right_canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: right_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        )
+
+        self._build_right(self.right_inner)
 
     #  train tabs 
 
@@ -461,7 +483,23 @@ class TrainControllerApp:
             command=self._toggle_int_light)
         self.int_light_btn.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
 
-        # 5 ── Operation Mode
+        # 5 ── Cabin Temperature (AC)
+        section_title(parent, "Cabin Temperature (AC)")
+        temp_card = card(parent, pad=10)
+        temp_row = tk.Frame(temp_card, bg=C["bg_card"]); temp_row.pack(fill=tk.X)
+        tk.Label(temp_row, text="Setpoint (°F):", bg=C["bg_card"],
+                 fg=C["text"], font=("Courier", 10)).pack(side=tk.LEFT, padx=4)
+        self.temp_lbl = tk.Label(temp_row,
+                                 text="70.0",
+                                 bg=C["bg_dark"], fg=C["text_lcd"],
+                                 font=("Courier", 12, "bold"), width=6)
+        self.temp_lbl.pack(side=tk.LEFT, padx=4)
+        pill_button(temp_row, "−", lambda: self._nudge_temp(-1.0),
+                    width=3, font_size=9).pack(side=tk.LEFT, padx=2)
+        pill_button(temp_row, "+", lambda: self._nudge_temp(+1.0),
+                    width=3, font_size=9).pack(side=tk.LEFT, padx=2)
+
+        # 6 ── Operation Mode
         section_title(parent, "Operation Mode")
         mode_card = card(parent, pad=10)
         mode_row = tk.Frame(mode_card, bg=C["bg_card"]); mode_row.pack(fill=tk.X)
@@ -579,9 +617,12 @@ class TrainControllerApp:
             setattr(self, attr, val_lbl)
 
         _out_row(0, "Actual Speed",   "#5a0000",  "disp_actual_spd",  "mph")
-        _out_row(1, "Passengers",     "#003050",  "disp_passengers",  "pax")
-        _out_row(2, "Next Station",   "#1a1a3a",  "disp_next_station","")
-        _out_row(3, "Power Command",  "#003a00",  "disp_power",       "W")
+        _out_row(1, "Cabin Temp",     "#3a2000",  "disp_temp",        "°F")
+        _out_row(2, "Distance",       "#3a3a00",  "disp_distance",    "miles")
+        _out_row(3, "Authority",      "#3a3a00",  "disp_authority",   "miles")
+        _out_row(4, "Passengers",     "#003050",  "disp_passengers",  "pax")
+        _out_row(5, "Next Station",   "#1a1a3a",  "disp_next_station","")
+        _out_row(6, "Power Command",  "#003a00",  "disp_power",       "W")
         out_grid.columnconfigure(0, weight=1)
         out_grid.columnconfigure(1, weight=1)
 
@@ -609,10 +650,30 @@ class TrainControllerApp:
             col = tk.Frame(stat_row, bg=C["bg_card"]); col.pack(side=tk.LEFT, expand=True)
             tk.Label(col, text=label, bg=C["bg_card"], fg=C["text_dim"],
                      font=("Courier", 9)).pack()
-            lbl = tk.Label(col, text="–", bg=C["bg_card"], fg=C["ok"],
+            # clearer defaults instead of dashes
+            if label == "Mode":
+                default_text = "AUTO"
+            elif label == "Doors":
+                default_text = "Closed"
+            elif label == "Lights":
+                default_text = "Off"
+            else:  # E-Brake
+                default_text = "OFF"
+            lbl = tk.Label(col, text=default_text, bg=C["bg_card"], fg=C["ok"],
                             font=("Courier", 10, "bold"))
             lbl.pack()
             setattr(self, attr, lbl)
+
+        # ads / announcements (match Train Model UI placeholder)
+        section_title(parent, "Advertisements")
+        ads_card = card(parent, pad=10)
+        ads_row = tk.Frame(ads_card, bg=C["bg_card"])
+        ads_row.pack(fill=tk.X, padx=6, pady=6)
+        ads_lbl = tk.Label(ads_row,
+                           text="[ Ad Content Placeholder ]",
+                           bg=C["bg_card"], fg=C["accent2"],
+                           font=("Courier", 11), anchor="center")
+        ads_lbl.pack(fill=tk.X, padx=8, pady=6)
 
     #  mini card 
 
@@ -817,6 +878,12 @@ class TrainControllerApp:
         for w in (self.kp_entry, self.ki_entry):
             w.config(state=state, bg=bg, fg=fg)
 
+    def _nudge_temp(self, delta_f):
+        t = self.T
+        t.cabin_temp = max(50.0, min(80.0, t.cabin_temp + delta_f))
+        self.temp_lbl.config(text=f"{t.cabin_temp:.1f}")
+        self._set_status(f"Cabin temperature set to {t.cabin_temp:.1f} °F")
+
     def _on_kp(self):
         self._ensure_engineer_inputs_enabled()
         try:
@@ -918,6 +985,11 @@ class TrainControllerApp:
                  ("Internal" if t.interior_lights else "Off"))
 
         self.disp_actual_spd.config(text=f"{t.current_speed:.1f}")
+        self.disp_temp.config(text=f"{t.cabin_temp:.1f}")
+        # distance and authority mirrored from the Train Model via backend
+        dist_km = getattr(t, "distance_travelled_km", 0.0)
+        self.disp_distance.config(text=f"{dist_km * 0.621371:.3f}")
+        self.disp_authority.config(text=f"{t.authority*0.000621371:.3f}")
         self.disp_passengers.config(text=str(t.passengers))
         self.disp_next_station.config(text=t.next_station)
         self.disp_power.config(text=f"{t.power_output:,.0f}")
