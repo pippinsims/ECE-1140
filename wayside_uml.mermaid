@@ -1,0 +1,181 @@
+classDiagram
+    direction TB
+
+    %% ─────────────────────────────────────────────
+    %% EXTERNAL / FRAMEWORK
+    %% ─────────────────────────────────────────────
+    class `tk.Tk` {
+        <<framework>>
+    }
+    class `tk.Frame` {
+        <<framework>>
+    }
+
+    %% ─────────────────────────────────────────────
+    %% TOP LEVEL — wayside_dashboard.py
+    %% ─────────────────────────────────────────────
+    class WaysideDashboard {
+        <<wayside_dashboard.py>>
+        +green_line_blocks : dict
+        +red_line_blocks : dict
+        +maintenance_mode : BooleanVar
+        +light_color : StringVar
+        +switch_position : StringVar
+        +crossing_status : StringVar
+        +plc_file_path : StringVar
+        +selected_line : StringVar
+        +selected_block : StringVar
+        +default_btn : Button
+        +browse_btn : Button
+        +upload_btn : Button
+        +default_status_label : Label
+        +plc_status_label : Label
+        +browse_error_label : Label
+        +__init__()
+        +initialize_green_line_blocks() dict
+        +initialize_red_line_blocks() dict
+        +setup_variables()
+        +setup_ui()
+        +create_header()
+        +create_track_area()
+        +_load_map_image(parent, img_path)
+        +create_bottom_section()
+        +create_controls_panel(parent)
+        +create_info_panel(parent)
+        +create_plc_upload_section(parent)
+        +on_line_selected(event)
+        +on_block_selected(event)
+        +display_block_controls(block_info)
+        +update_info_display(block_info)
+        +apply_switch_change()
+        +apply_light_change()
+        +apply_crossing_change()
+        +browse_file()
+        +upload_file()
+        +use_default_settings()
+        +_on_wayside_closed(win)
+        +_set_default_mode(active)
+        +_set_plc_mode(active)
+        +_on_plc_closed(win)
+        +_show_plc_help()
+        +_attach_plc_help_tooltip(widget)
+        +_attach_tooltip(widget, text)
+    }
+
+    %% ─────────────────────────────────────────────
+    %% CONTROLLER FRAME — wayside_controller.py
+    %% ─────────────────────────────────────────────
+    class WaysideFrame {
+        <<wayside_controller.py>>
+        +lines : dict
+        -_compute_fn : callable
+        -_testing_mode : bool
+        -_live_job : int
+        -_input_widgets : dict
+        -_test_btn : Button
+        -_test_banner : Label
+        +__init__(parent, compute_fn)
+        +_build_ui()
+        +_build_line_tab(parent, name)
+        +_section_label(parent, text, color)
+        +_make_scrollable(parent, builder_fn)
+        +_build_block_inputs(parent, name, lc)
+        +_build_outputs_panel(parent, name, lc)
+        +_card(parent, title) Frame
+        +_refresh()
+        +_toggle_testing_mode()
+        +_apply_testing_mode()
+        +_set_inputs_locked(locked)
+        +_schedule_live_poll()
+        +_poll_live_data()
+        +receive_live_data(line_name, block_data)
+        +_toggle_maintenance(name)
+        +_seed_overrides(name)
+        +_set_override_widgets_visible(name, visible)
+        +_toggle_switch_override(sw_id, name, override_var, btn)
+        +_cycle_signal_override(blk, name, override_var)
+    }
+
+    class WaysideApp {
+        <<wayside_controller.py>>
+        +__init__()
+    }
+
+    %% ─────────────────────────────────────────────
+    %% MODULE-LEVEL FUNCTIONS — wayside_controller.py
+    %% ─────────────────────────────────────────────
+    class WaysideLogic {
+        <<module functions>>
+        +build_switch_map(switches) dict
+        +authority_reach(start_block, authority_km, block_lengths, switch_map) set
+        +compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_list) dict
+        +launch_as_toplevel(parent, compute_fn, title) Toplevel
+    }
+
+    %% ─────────────────────────────────────────────
+    %% DATA STRUCTURES
+    %% ─────────────────────────────────────────────
+    class LineData {
+        <<data structure>>
+        +block_lengths : dict
+        +switches : dict
+        +crossings : list
+        +color : str
+        +block_vars : dict
+        +sw_labels : dict
+        +sig_labels : dict
+        +cx_labels : dict
+        +maintenance : bool
+        +maint_btn : Button
+        +maint_banner : Label
+    }
+
+    class BlockState {
+        <<data structure>>
+        +occupied : bool
+        +cmd_speed : float
+        +authority : float
+    }
+
+    class WaysideOutputs {
+        <<data structure>>
+        +switches : dict
+        +signals : dict
+        +crossings : dict
+        +reach : dict
+    }
+
+    class PLCModule {
+        <<external .py file>>
+        +compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_list) dict
+    }
+
+    class CTCTrackModel {
+        <<future integration>>
+        +get_block_states(line_name) dict
+    }
+
+    %% ─────────────────────────────────────────────
+    %% INHERITANCE
+    %% ─────────────────────────────────────────────
+    `tk.Tk`       <|-- WaysideDashboard
+    `tk.Tk`       <|-- WaysideApp
+    `tk.Frame`    <|-- WaysideFrame
+
+    %% ─────────────────────────────────────────────
+    %% COMPOSITION / OWNERSHIP
+    %% ─────────────────────────────────────────────
+    WaysideDashboard *-- "1" WaysideFrame : launches via\nlaunch_as_toplevel()
+    WaysideApp       *-- "1" WaysideFrame : hosts
+    WaysideFrame     *-- "2" LineData     : owns (Green + Red)
+    LineData         *-- "1..*" BlockState : contains per block
+
+    %% ─────────────────────────────────────────────
+    %% DEPENDENCIES / CALLS
+    %% ─────────────────────────────────────────────
+    WaysideDashboard ..> WaysideLogic      : calls launch_as_toplevel()
+    WaysideFrame     ..> WaysideLogic      : calls compute_wayside_outputs()\nbuild_switch_map()\nauthority_reach()
+    WaysideFrame     ..> WaysideOutputs   : produces on each refresh
+    WaysideFrame     ..> PLCModule         : optionally uses\ncustom compute_fn
+    CTCTrackModel    ..> WaysideFrame      : calls receive_live_data()\n(future integration)
+    WaysideDashboard ..> PLCModule         : imports & validates\non upload

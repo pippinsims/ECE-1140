@@ -80,6 +80,19 @@ RED_SWITCHES = {
 GREEN_CROSSINGS = [19, 108]
 RED_CROSSINGS   = [11, 47]
 
+BLUE_BLOCK_LENGTHS = {
+    1:50, 2:50, 3:50, 4:50, 5:50,
+    6:50, 7:50, 8:50, 9:50, 10:50,
+    11:50, 12:50, 13:50, 14:50, 15:50,
+}
+
+BLUE_SWITCHES = {
+    "SW5": {"host":5, "normal":(6, "5->6"), "reverse":(11, "5->11"),
+            "description":"Blocks 5->6 (Branch B) / 5->11 (Branch C)"},
+}
+
+BLUE_CROSSINGS = [3]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUTHORITY -> BLOCK REACH  (BFS over block graph)
@@ -267,6 +280,7 @@ C = {
     "yellow": "#ffd700",
     "red":    "#ff4757",
     "orange": "#ff6b35",
+    "blue":   "#4fc3f7",
     "white":  "#e0e0e0",
     "muted":  "#8899aa",
     "header": "#0d2137",
@@ -287,13 +301,17 @@ class WaysideFrame(tk.Frame):
     The full wayside controller UI packaged as a Frame.
     Can be embedded inside any tk.Tk, tk.Toplevel, or another Frame.
     """
-    def __init__(self, parent, compute_fn=None, **kwargs):
+    def __init__(self, parent, compute_fn=None, mode="live", **kwargs):
+        """
+        mode : "live"    — locked inputs, live polling, no toggle button
+               "testing" — editable inputs, no polling, no toggle button
+        """
         super().__init__(parent, bg=C["bg"], **kwargs)
-        # Use provided compute function or fall back to the built-in one
         self._compute_fn   = compute_fn if compute_fn is not None else compute_wayside_outputs
-        self._testing_mode = False  # Start in live mode
-        self._live_job     = None   # holds the after() id for live polling
-        self._input_widgets = {"Green": [], "Red": []}  # list of (cb, sp_speed, sp_auth) per block
+        self._mode         = mode                   # "live" or "testing"
+        self._testing_mode = (mode == "testing")    # True if testing window
+        self._live_job     = None
+        self._input_widgets = {"Green": [], "Red": [], "Blue": []}
 
         self.lines = {
             "Green": {
@@ -322,6 +340,19 @@ class WaysideFrame(tk.Frame):
                 "maint_btn":     None,
                 "maint_banner":  None,
             },
+            "Blue": {
+                "block_lengths": BLUE_BLOCK_LENGTHS,
+                "switches":      BLUE_SWITCHES,
+                "crossings":     BLUE_CROSSINGS,
+                "color":         C["blue"],
+                "block_vars":    {},
+                "sw_labels":     {},
+                "sig_labels":    {},
+                "cx_labels":     {},
+                "maintenance":   False,
+                "maint_btn":     None,
+                "maint_banner":  None,
+            },
         }
 
         self._build_ui()
@@ -336,29 +367,32 @@ class WaysideFrame(tk.Frame):
         hdr.pack(fill="x")
         tk.Label(hdr, text="WAYSIDE CONTROLLER",
                  font=("Helvetica", 20, "bold"), bg=C["header"], fg=C["white"]).pack(side="left", padx=20)
-        tk.Label(hdr, text="Green Line  &  Red Line",
+        tk.Label(hdr, text="Green Line  |  Red Line  |  Blue Line",
                  font=("Helvetica", 12), bg=C["header"], fg=C["muted"]).pack(side="left", padx=8)
 
-        # Testing mode toggle — global, lives in the header
-        self._test_btn = tk.Button(
-            hdr,
-            text="🧪  Testing Mode: ON",
-            font=("Helvetica", 9, "bold"),
-            bg=C["green"], fg="#000000",
-            activebackground=C["green"],
-            relief="flat", bd=0, padx=12, pady=5,
-            cursor="hand2",
-            command=self._toggle_testing_mode,
-        )
-        self._test_btn.pack(side="right", padx=20)
+        # Mode badge — fixed label showing live or testing, no toggle
+        if self._mode == "testing":
+            badge_text  = "🧪  TESTING MODE"
+            badge_bg    = C["green"]
+            badge_fg    = "#000000"
+        else:
+            badge_text  = "📡  LIVE MODE"
+            badge_bg    = C["yellow"]
+            badge_fg    = "#000000"
+
+        tk.Label(hdr, text=badge_text,
+                 font=("Helvetica", 9, "bold"),
+                 bg=badge_bg, fg=badge_fg,
+                 padx=12, pady=5).pack(side="right", padx=20)
 
         self._test_banner = tk.Label(
             hdr,
-            text="  LIVE  —  receiving data from CTC & Track Model every 1s",
+            text="  Receiving data from CTC & Track Model every 1s",
             font=("Helvetica", 8, "italic"),
             bg=C["header"], fg=C["yellow"],
         )
-        # Packed only when live mode is active
+        if self._mode == "live":
+            self._test_banner.pack(side="right", padx=6)
 
         style = ttk.Style()
         style.theme_use("clam")
@@ -371,7 +405,7 @@ class WaysideFrame(tk.Frame):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=8, pady=8)
 
-        for name in ["Green", "Red"]:
+        for name in ["Green", "Red", "Blue"]:
             frame = tk.Frame(nb, bg=C["bg"])
             nb.add(frame, text=f"  {name} Line  ")
             self._build_line_tab(frame, name)
@@ -677,31 +711,14 @@ class WaysideFrame(tk.Frame):
 
     # ── Testing mode helpers ──────────────────────────────────────────────────
 
-    def _toggle_testing_mode(self):
-        """Switch between Testing (manual) and Live (auto-push) mode."""
-        self._testing_mode = not self._testing_mode
-        self._apply_testing_mode()
-
     def _apply_testing_mode(self):
-        """Update button appearance and lock/unlock inputs based on current mode."""
+        """Lock/unlock inputs based on current mode. No toggle button anymore."""
         if self._testing_mode:
-            # Cancel live polling if running
             if self._live_job is not None:
                 self.after_cancel(self._live_job)
                 self._live_job = None
-            self._test_btn.config(
-                text="🧪  Testing Mode: ON",
-                bg=C["green"], fg="#000000",
-            )
-            self._test_banner.pack_forget()
             self._set_inputs_locked(False)
         else:
-            # Switch to live mode — lock inputs and start polling
-            self._test_btn.config(
-                text="📡  Live Mode: ON",
-                bg=C["yellow"], fg="#000000",
-            )
-            self._test_banner.pack(side="right", padx=10)
             self._set_inputs_locked(True)
             self._schedule_live_poll()
 
@@ -896,17 +913,17 @@ class WaysideApp(tk.Tk):
         WaysideFrame(self).pack(fill="both", expand=True)
 
 
-def launch_as_toplevel(parent, compute_fn=None, title=None):
+def launch_as_toplevel(parent, compute_fn=None, title=None, mode="live"):
     """
-    Open the Wayside Controller as a child Toplevel of an existing tkinter app.
-    Optionally pass a custom compute_fn to replace the built-in wayside logic.
+    Open the Wayside Controller as a child Toplevel.
+    mode: "live" or "testing"
     """
     win = tk.Toplevel(parent)
     win.title(title or "Wayside Controller – Green & Red Lines")
     win.geometry("1300x840")
     win.configure(bg=C["bg"])
     win.resizable(True, True)
-    WaysideFrame(win, compute_fn=compute_fn).pack(fill="both", expand=True)
+    WaysideFrame(win, compute_fn=compute_fn, mode=mode).pack(fill="both", expand=True)
     return win
 
 
