@@ -96,6 +96,11 @@ class Train:
         self.block:Block = tkm.blocks[0]
         self.spd = 0
 
+#"overhead power" not "block power", and on this fault it doesn't report occupied, this is just power to the train
+# num passengers boarded/ passengers standing/num tickets all on main ui
+# test ui should receive the actual output type of the tkc not strings/ints.
+#beacon data is static, you can load it in with the file
+
 class TrackRectItem(QGraphicsRectItem):
     def __init__(self, scene, b: Block):
         self.block = b
@@ -230,6 +235,8 @@ class TrackMap:
         blocks = self.blocks
         todo = [blocks[0]]
         while len(todo) > 0:
+            #TODO if you try and make infrastructure check good it just breaks everything right here 
+            #and skipping the None that is then in todo after seg 15 causes the track to display wrong
             b = todo.pop(0)
             if b.num == 1:
                 b.setx(int(self.width*0.75))
@@ -278,12 +285,12 @@ class TrackMap:
         view.setMaximumSize(view.width(),view.height())
         return view
     
-    def blockOf(self, t: Train) -> Block:
-        sum = 0
-        for b in self.blocks:
-            sum += b.leng
-            if t.relpos > sum: continue
-            else: return b
+    # def blockOf(self, t: Train) -> Block:
+    #     sum = 0
+    #     for b in self.blocks:
+    #         sum += b.leng
+    #         if t.relpos > sum: continue
+    #         else: return b
     
     def update(self):
         for t in self.trains:
@@ -366,7 +373,6 @@ class TrackMap:
                 
             elif b.type[0] == "c": #crossing
                 if b.crstat: it.setTrackPen(BLCKPEN)
-
 
 class MainWindow(QWidget):
     def __init__(self, tkm:TrackMap):
