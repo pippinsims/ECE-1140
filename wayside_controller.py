@@ -496,7 +496,7 @@ class WaysideFrame(tk.Frame):
 
         self._test_banner = tk.Label(
             hdr,
-            text="  Receiving data from CTC & Track Model every 1s",
+            text="  Receiving data from CTC & Track Model every 100ms",
             font=("Helvetica", 8, "italic"),
             bg=C["header"], fg=C["yellow"],
         )
@@ -883,10 +883,10 @@ class WaysideFrame(tk.Frame):
                               fg=dim_fg if locked else norm_fg)
 
     def _schedule_live_poll(self):
-        """Schedule the next live data push in 1 second."""
+        """Schedule the next live data push in 100 millisecond."""
         if not self._testing_mode:
             self._poll_live_data()
-            self._live_job = self.after(1000, self._schedule_live_poll)
+            self._live_job = self.after(100, self._schedule_live_poll)
 
     def _poll_live_data(self):
         """
