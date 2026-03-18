@@ -1004,6 +1004,8 @@ class WaysideFrame(tk.Frame):
                 override_btn.config(text=label)
 
         for blk, sig in result["signals"].items():
+            if sig is None:
+                continue   # no physical signal — skip seeding
             entry = line["sig_labels"].get(blk)
             if entry:
                 _, _, _, override_var, cycle_btn, _ = entry
@@ -1040,12 +1042,14 @@ class WaysideFrame(tk.Frame):
         """Step the manual signal override: green → yellow → red → green."""
         cycle = ["green", "yellow", "red"]
         current = override_var.get()
+        if current not in cycle:
+            current = "green"
         next_sig = cycle[(cycle.index(current) + 1) % len(cycle)]
         override_var.set(next_sig)
         # Update the cycle button label and colour
         entry = self.lines[name]["sig_labels"].get(blk)
         if entry:
-            _, _, _, _, cycle_btn = entry
+            _, _, _, _, cycle_btn, _ = entry
             cycle_btn.config(text=next_sig[:1].upper(),
                              fg=SIG_COLOR.get(next_sig, C["muted"]))
         self._refresh()
