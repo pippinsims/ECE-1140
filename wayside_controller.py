@@ -93,6 +93,55 @@ BLUE_SWITCHES = {
 
 BLUE_CROSSINGS = [3]
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STATION BLOCKS (from Excel spreadsheet)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GREEN_STATIONS = {2, 9, 16, 22, 31, 39, 48, 57, 65, 73, 77, 88, 96}
+RED_STATIONS   = {7, 16, 21, 25, 35, 45, 48, 60}
+BLUE_STATIONS  = {10, 15}
+
+def compute_signal_blocks(stations, switches_def, block_lengths):
+    """
+    Return the set of blocks that should have signals:
+      - All switch-connected blocks (host + both branches)
+      - The block immediately before and after every station
+        in both directions (bidirectional support)
+    Blocks that are not in this set get signal = None.
+    """
+    signal_blocks = set()
+
+    # Switch blocks: host + normal branch + reverse branch
+    for sw in switches_def.values():
+        signal_blocks.add(sw["host"])
+        n = sw["normal"][0]
+        r = sw["reverse"][0]
+        if n > 0: signal_blocks.add(n)
+        if r > 0: signal_blocks.add(r)
+
+    # Station neighbours: 1 block before and after each station
+    all_blocks = set(block_lengths.keys())
+    for st in stations:
+        before = st - 1
+        after  = st + 1
+        if before in all_blocks: signal_blocks.add(before)
+        if after  in all_blocks: signal_blocks.add(after)
+
+    # Only include blocks that actually exist on this line
+    return signal_blocks & all_blocks
+
+
+# Pre-compute signal block sets for each line
+GREEN_SIGNAL_BLOCKS = compute_signal_blocks(GREEN_STATIONS, GREEN_SWITCHES, GREEN_BLOCK_LENGTHS)
+RED_SIGNAL_BLOCKS   = compute_signal_blocks(RED_STATIONS,   RED_SWITCHES,   RED_BLOCK_LENGTHS)
+BLUE_SIGNAL_BLOCKS  = compute_signal_blocks(BLUE_STATIONS,  BLUE_SWITCHES,  BLUE_BLOCK_LENGTHS)
+
+# Map line name → signal block set (used by WaysideFrame)
+LINE_SIGNAL_BLOCKS = {
+    "Green": GREEN_SIGNAL_BLOCKS,
+    "Red":   RED_SIGNAL_BLOCKS,
+    "Blue":  BLUE_SIGNAL_BLOCKS,
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AUTHORITY -> BLOCK REACH  (BFS over block graph)
@@ -156,15 +205,25 @@ def authority_reach(start_block, authority_km, block_lengths, switch_map):
 # WAYSIDE LOGIC
 # ─────────────────────────────────────────────────────────────────────────────
 
-def compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_list):
+def compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_list,
+                             signal_blocks=None):
     """
-    block_state: {blk: {"occupied": bool, "cmd_speed": float, "authority": float (km)}}
+    block_state:   {blk: {"occupied": bool, "cmd_speed": float, "authority": float (km)}}
+    signal_blocks: set of block numbers that have physical signals.
+                   Blocks NOT in this set will have signal=None in the output.
+                   If None, all blocks get signals (backwards-compatible default).
 
     Returns:
       "switches":  {sw_id: "normal"|"reverse"}
-      "signals":   {blk: "green"|"yellow"|"red"}
+      "signals":   {blk: "green"|"yellow"|"red"|None}
+                   None means no signal exists at this block.
       "crossings": {blk: "active"|"inactive"}
       "reach":     {train_blk: set_of_blocks}
+
+    NOTE FOR PLC FILES:
+      Only blocks in signal_blocks receive computed signal colours.
+      All other blocks return None. Your PLC should follow the same rule —
+      return None for blocks that have no physical signal.
     """
     sw_map = build_switch_map(switches_def)
 
@@ -183,11 +242,15 @@ def compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_
     occupied    = {b for b, s in block_state.items() if s["occupied"]}
 
     # ── Signal logic ───────────────────────────────────────────────────────
-    # For each block, determine the appropriate signal based on:
-    #   1. Immediate safety  (next block occupied?)
-    #   2. Authority reach   (does a train's authority extend through here?)
+    # Only blocks in signal_blocks get a computed colour.
+    # All other blocks get None (no physical signal present).
     signals = {}
     for blk in block_lengths:
+        # No physical signal at this block
+        if signal_blocks is not None and blk not in signal_blocks:
+            signals[blk] = None
+            continue
+
         st        = block_state.get(blk, {})
         is_occ    = st.get("occupied", False)
         cmd_speed = st.get("cmd_speed", 0.0)
@@ -197,15 +260,13 @@ def compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_
         next2 = blk + 2
 
         if is_occ:
-            # Signal for the TRAIN currently on this block
             if next1 in occupied:
                 sig = "red"
             elif authority <= 0 or cmd_speed == 0:
                 sig = "red"
             else:
-                # How many metres of authority remain past this block?
-                len1 = block_lengths.get(next1, 50)
-                len2 = block_lengths.get(next2, 50)
+                len1   = block_lengths.get(next1, 50)
+                len2   = block_lengths.get(next2, 50)
                 auth_m = authority * 1000
                 if auth_m < len1:
                     sig = "red"
@@ -214,7 +275,6 @@ def compute_wayside_outputs(block_state, block_lengths, switches_def, crossings_
                 else:
                     sig = "green"
         else:
-            # Unoccupied — show approach signal
             if next1 in occupied:
                 sig = "red"
             elif next2 in occupied:
@@ -287,6 +347,49 @@ C = {
     "reach":  "#1d4e6b",
 }
 SIG_COLOR = {"green": C["green"], "yellow": C["yellow"], "red": C["red"]}
+C["occupied"] = "#2e3f5c"   # highlight for occupied blocks in output grid
+
+# ── Unit conversion helpers ───────────────────────────────────────────────────
+KMH_TO_MPH = 0.621371
+KM_TO_MILES = 0.621371
+
+def kmh_to_mph(v): return v * KMH_TO_MPH
+def mph_to_kmh(v): return v * (1.0 / KMH_TO_MPH)
+def km_to_miles(v): return v * KM_TO_MILES
+def miles_to_km(v): return v * (1.0 / KM_TO_MILES)
+
+# ── Speed limits per block (km/h from spreadsheet) ───────────────────────────
+GREEN_SPEED_LIMITS = {
+    1:45,2:45,3:45,4:45,5:45,6:45,7:45,8:45,9:45,10:45,
+    11:45,12:45,13:70,14:70,15:70,16:70,17:60,18:60,19:60,20:60,
+    21:70,22:70,23:70,24:70,25:70,26:70,27:30,28:30,29:30,30:30,
+    31:30,32:30,33:30,34:30,35:30,36:30,37:30,38:30,39:30,40:30,
+    41:30,42:30,43:30,44:30,45:30,46:30,47:30,48:30,49:30,50:30,
+    51:30,52:30,53:30,54:30,55:30,56:30,57:30,58:30,59:30,60:30,
+    61:30,62:30,63:70,64:70,65:70,66:70,67:40,68:40,69:40,70:40,
+    71:40,72:40,73:40,74:40,75:40,76:40,77:70,78:70,79:70,80:70,
+    81:70,82:70,83:70,84:70,85:70,86:25,87:25,88:25,89:25,90:25,
+    91:25,92:25,93:25,94:25,95:25,96:25,97:25,98:25,99:25,100:25,
+    101:26,102:28,103:28,104:28,105:28,106:28,107:28,108:28,109:28,110:30,
+    111:30,112:30,113:30,114:30,115:30,116:30,117:15,118:15,119:15,120:15,
+    121:15,122:20,123:20,124:20,125:20,126:20,127:20,128:20,129:20,130:20,
+    131:20,132:20,133:20,134:20,135:20,136:20,137:20,138:20,139:20,140:20,
+    141:20,142:20,143:20,144:20,145:20,146:20,147:20,148:20,149:20,150:20,
+}
+RED_SPEED_LIMITS = {
+    1:40,2:40,3:40,4:40,5:40,6:40,7:40,8:40,9:40,10:40,
+    11:40,12:40,13:40,14:40,15:40,16:40,17:55,18:70,19:70,20:70,
+    21:55,22:55,23:55,24:70,25:70,26:70,27:70,28:70,29:70,30:70,
+    31:70,32:70,33:70,34:70,35:70,36:70,37:70,38:70,39:70,40:70,
+    41:70,42:70,43:70,44:70,45:70,46:70,47:70,48:70,49:60,50:60,
+    51:55,52:55,53:55,54:55,55:55,56:55,57:55,58:55,59:55,60:55,
+    61:55,62:55,63:55,64:55,65:55,66:55,67:55,68:55,69:55,70:55,
+    71:55,72:55,73:55,74:55,75:55,76:55,
+}
+BLUE_SPEED_LIMITS = {
+    1:50,2:50,3:50,4:50,5:50,6:50,7:50,8:50,9:50,10:50,
+    11:50,12:50,13:50,14:50,15:50,
+}
 
 
 
@@ -316,8 +419,10 @@ class WaysideFrame(tk.Frame):
         self.lines = {
             "Green": {
                 "block_lengths": GREEN_BLOCK_LENGTHS,
+                "speed_limits":  GREEN_SPEED_LIMITS,
                 "switches":      GREEN_SWITCHES,
                 "crossings":     GREEN_CROSSINGS,
+                "signal_blocks": GREEN_SIGNAL_BLOCKS,
                 "color":         C["green"],
                 "block_vars":    {},
                 "sw_labels":     {},   # {sw_id: (pos_lbl, route_lbl, override_var, override_btn)}
@@ -329,8 +434,10 @@ class WaysideFrame(tk.Frame):
             },
             "Red": {
                 "block_lengths": RED_BLOCK_LENGTHS,
+                "speed_limits":  RED_SPEED_LIMITS,
                 "switches":      RED_SWITCHES,
                 "crossings":     RED_CROSSINGS,
+                "signal_blocks": RED_SIGNAL_BLOCKS,
                 "color":         C["red"],
                 "block_vars":    {},
                 "sw_labels":     {},
@@ -342,8 +449,10 @@ class WaysideFrame(tk.Frame):
             },
             "Blue": {
                 "block_lengths": BLUE_BLOCK_LENGTHS,
+                "speed_limits":  BLUE_SPEED_LIMITS,
                 "switches":      BLUE_SWITCHES,
                 "crossings":     BLUE_CROSSINGS,
+                "signal_blocks": BLUE_SIGNAL_BLOCKS,
                 "color":         C["blue"],
                 "block_vars":    {},
                 "sw_labels":     {},
@@ -482,30 +591,34 @@ class WaysideFrame(tk.Frame):
         line = self.lines[name]
         hdr  = tk.Frame(parent, bg=C["panel"])
         hdr.pack(fill="x", padx=4, pady=(4, 0))
-        for txt, w in [("Block", 14), ("Length (m)", 10), ("Occupied", 9),
-                       ("Cmd Speed\n(km/h)", 12), ("Authority\n(km)", 11)]:
+        for txt, w in [("Block", 14), ("Spd Limit\n(mph)", 10), ("Occupied", 9),
+                       ("Cmd Speed\n(mph)", 12), ("Authority\n(miles)", 11)]:
             tk.Label(hdr, text=txt, font=("Helvetica", 8, "bold"), bg=C["panel"],
                      fg=C["muted"], width=w, anchor="center").pack(side="left", padx=2, pady=3)
 
+        speed_limits = line.get("speed_limits", {})
         for blk in sorted(line["block_lengths"].keys()):
-            blk_len = line["block_lengths"][blk]
             is_sw   = any(sw["host"] == blk for sw in line["switches"].values())
             is_cx   = blk in line["crossings"]
             tag     = " [SW]" if is_sw else (" [CX]" if is_cx else "")
             fg      = C["orange"] if is_cx else (C["yellow"] if is_sw else C["white"])
             row_bg  = C["panel"] if blk % 2 == 0 else C["card"]
 
+            # Speed limit converted to mph for display
+            spd_kmh = speed_limits.get(blk, 0)
+            spd_mph = kmh_to_mph(spd_kmh)
+
             row = tk.Frame(parent, bg=row_bg)
             row.pack(fill="x", padx=4, pady=1)
 
             tk.Label(row, text=f"{blk}{tag}", font=("Helvetica", 8),
                      bg=row_bg, fg=fg, width=14, anchor="w").pack(side="left", padx=3)
-            tk.Label(row, text=f"{blk_len:.0f}", font=("Helvetica", 8),
+            tk.Label(row, text=f"{spd_mph:.0f}", font=("Helvetica", 8),
                      bg=row_bg, fg=C["muted"], width=10, anchor="center").pack(side="left", padx=2)
 
             occ_var   = tk.BooleanVar(value=False)
-            speed_var = tk.DoubleVar(value=0.0)
-            auth_var  = tk.DoubleVar(value=0.0)
+            speed_var = tk.DoubleVar(value=0.0)   # stored in mph
+            auth_var  = tk.DoubleVar(value=0.0)   # stored in miles
 
             cb = tk.Checkbutton(row, variable=occ_var, bg=row_bg, fg=lc,
                                 activebackground=row_bg, selectcolor=row_bg,
@@ -513,8 +626,9 @@ class WaysideFrame(tk.Frame):
             cb.pack(side="left", padx=10)
 
             spinboxes = []
-            for var, hi, inc, fmt in [(speed_var, 200, 5, "%.0f"),
-                                       (auth_var,  100, 0.05, "%.2f")]:
+            # Speed: 0–150 mph, Authority: 0–62 miles (≈100 km)
+            for var, hi, inc, fmt in [(speed_var, 150, 5, "%.0f"),
+                                       (auth_var,  62,  0.05, "%.2f")]:
                 sp = tk.Spinbox(row, from_=0, to=hi, increment=inc, textvariable=var,
                                 format=fmt, width=8, font=("Helvetica", 8),
                                 bg=C["bg"], fg=C["white"], buttonbackground=C["card"],
@@ -529,8 +643,8 @@ class WaysideFrame(tk.Frame):
 
             line["block_vars"][blk] = {
                 "occupied":  occ_var,
-                "cmd_speed": speed_var,
-                "authority": auth_var,
+                "cmd_speed": speed_var,   # mph in UI
+                "authority": auth_var,    # miles in UI
             }
 
     def _build_outputs_panel(self, parent, name, lc):
@@ -579,6 +693,7 @@ class WaysideFrame(tk.Frame):
         cols = 10
         SIG_CYCLE = ["green", "yellow", "red"]   # manual cycle order
 
+        speed_limits = line.get("speed_limits", {})
         for i, blk in enumerate(sorted(line["block_lengths"].keys())):
             r, c = divmod(i, cols)
             cell = tk.Frame(grid, bg=C["bg"], bd=1, relief="solid")
@@ -590,6 +705,11 @@ class WaysideFrame(tk.Frame):
             dot = tk.Label(cell, text="●", font=("Helvetica", 12),
                            bg=C["bg"], fg=C["muted"])
             dot.pack()
+            # Speed limit label (mph)
+            spd_kmh = speed_limits.get(blk, 0)
+            spd_lbl = tk.Label(cell, text=f"{kmh_to_mph(spd_kmh):.0f}mph",
+                               font=("Helvetica", 6), bg=C["bg"], fg=C["muted"])
+            spd_lbl.pack()
 
             # Cycle button — clicking steps green→yellow→red→green
             override_var = tk.StringVar(value="green")
@@ -609,7 +729,7 @@ class WaysideFrame(tk.Frame):
             )
             # Not packed yet
 
-            line["sig_labels"][blk] = (dot, cell, num_lbl, override_var, cycle_btn)
+            line["sig_labels"][blk] = (dot, cell, num_lbl, override_var, cycle_btn, spd_lbl)
 
         # ── Railway Crossing States ───────────────────────────────────
         cx_card = self._card(parent, "Railway Crossing States")
@@ -628,8 +748,9 @@ class WaysideFrame(tk.Frame):
         leg.pack(fill="x", padx=6, pady=(6, 2))
         tk.Label(leg, text="Legend:", font=("Helvetica", 8, "bold"),
                  bg=C["bg"], fg=C["muted"]).pack(side="left")
-        for txt, col in [("  Green = clear", C["green"]), ("  Yellow = caution", C["yellow"]),
-                         ("  Red = stop", C["red"]), ("  Blue bg = within authority", C["reach"])]:
+        for txt, col in [("  ● Green = clear", C["green"]), ("  ● Yellow = caution", C["yellow"]),
+                         ("  ● Red = stop", C["red"]), ("  — No signal", C["muted"]),
+                         ("  █ Occupied block", C["occupied"]), ("  Blue bg = authority", C["reach"])]:
             tk.Label(leg, text=txt, font=("Helvetica", 8), bg=C["bg"], fg=col).pack(side="left")
 
     def _card(self, parent, title):
@@ -646,19 +767,20 @@ class WaysideFrame(tk.Frame):
             block_state = {}
             for blk, bvars in line["block_vars"].items():
                 try:
-                    speed = float(bvars["cmd_speed"].get())
-                    auth  = float(bvars["authority"].get())
+                    speed_mph  = float(bvars["cmd_speed"].get())
+                    auth_miles = float(bvars["authority"].get())
                 except (tk.TclError, ValueError):
-                    speed, auth = 0.0, 0.0
+                    speed_mph, auth_miles = 0.0, 0.0
                 block_state[blk] = {
                     "occupied":  bvars["occupied"].get(),
-                    "cmd_speed": speed,
-                    "authority": auth,
+                    "cmd_speed": mph_to_kmh(speed_mph),    # convert to km/h for logic
+                    "authority": miles_to_km(auth_miles),  # convert to km for logic
                 }
 
             result = self._compute_fn(
                 block_state, line["block_lengths"],
                 line["switches"], line["crossings"],
+                line.get("signal_blocks"),
             )
 
             all_reach = set().union(*result["reach"].values()) if result["reach"] else set()
@@ -683,22 +805,47 @@ class WaysideFrame(tk.Frame):
                     pos_lbl.config(text="REVERSE", fg=C["yellow"])
                     route_lbl.config(text=sw["reverse"][1], fg=C["yellow"])
 
+            # Collect occupied blocks for highlight
+            occupied_blks = {b for b, s in block_state.items() if s["occupied"]}
+
             # ── Signals ────────────────────────────────────────────────
             for blk, sig in result["signals"].items():
                 entry = line["sig_labels"].get(blk)
                 if not entry:
                     continue
-                dot, cell, num_lbl, override_var, cycle_btn = entry
+                dot, cell, num_lbl, override_var, cycle_btn, spd_lbl = entry
+
+                is_occupied = blk in occupied_blks
+
+                # Occupancy highlight overrides all other backgrounds
+                if is_occupied:
+                    occ_bg = C["occupied"]
+                    cell.config(bg=occ_bg)
+                    dot.config(bg=occ_bg)
+                    num_lbl.config(bg=occ_bg)
+                    spd_lbl.config(bg=occ_bg)
+
+                if sig is None:
+                    # No physical signal — show dash
+                    dot.config(text="—", fg=C["muted"], font=("Helvetica", 10))
+                    if not is_occupied:
+                        cell.config(bg=C["bg"])
+                        dot.config(bg=C["bg"])
+                        num_lbl.config(bg=C["bg"])
+                        spd_lbl.config(bg=C["bg"])
+                    continue
 
                 if in_maintenance:
                     sig = override_var.get()
 
-                dot.config(fg=SIG_COLOR.get(sig, C["muted"]))
-                # Suppress authority reach highlight in maintenance mode (less confusing)
-                bg = (C["reach"] if blk in all_reach else C["bg"]) if not in_maintenance else C["bg"]
-                cell.config(bg=bg)
-                dot.config(bg=bg)
-                num_lbl.config(bg=bg)
+                dot.config(text="●", fg=SIG_COLOR.get(sig, C["muted"]),
+                           font=("Helvetica", 12))
+                if not is_occupied:
+                    bg = (C["reach"] if blk in all_reach else C["bg"]) if not in_maintenance else C["bg"]
+                    cell.config(bg=bg)
+                    dot.config(bg=bg)
+                    num_lbl.config(bg=bg)
+                    spd_lbl.config(bg=bg)
 
             # ── Crossings ──────────────────────────────────────────────
             for cx, state in result["crossings"].items():
@@ -775,10 +922,14 @@ class WaysideFrame(tk.Frame):
 
         Parameters
         ----------
-        line_name  : "Green" or "Red"
+        line_name  : "Green", "Red", or "Blue"
         block_data : {block_num: {"occupied": bool,
-                                  "cmd_speed": float,
-                                  "authority": float}}
+                                  "cmd_speed": float,   # km/h (metric internally)
+                                  "authority": float}}  # km  (metric internally)
+
+        NOTE: The UI displays mph/miles but all logic and external data
+        use metric (km/h, km). Conversion happens at the input layer.
+        Live data pushed here should be in km/h and km.
         """
         if self._testing_mode:
             return  # ignore live pushes while in testing mode
@@ -792,8 +943,9 @@ class WaysideFrame(tk.Frame):
             if not bvars:
                 continue
             bvars["occupied"].set(bool(data.get("occupied", False)))
-            bvars["cmd_speed"].set(float(data.get("cmd_speed", 0.0)))
-            bvars["authority"].set(float(data.get("authority", 0.0)))
+            # Convert metric inputs to imperial for display
+            bvars["cmd_speed"].set(round(kmh_to_mph(float(data.get("cmd_speed", 0.0))), 1))
+            bvars["authority"].set(round(km_to_miles(float(data.get("authority", 0.0))), 3))
 
         self._refresh()
 
@@ -841,6 +993,7 @@ class WaysideFrame(tk.Frame):
         result = self._compute_fn(
             block_state, line["block_lengths"],
             line["switches"], line["crossings"],
+            line.get("signal_blocks"),
         )
         for sw_id, pos in result["switches"].items():
             entry = line["sw_labels"].get(sw_id)
@@ -853,7 +1006,7 @@ class WaysideFrame(tk.Frame):
         for blk, sig in result["signals"].items():
             entry = line["sig_labels"].get(blk)
             if entry:
-                _, _, _, override_var, cycle_btn = entry
+                _, _, _, override_var, cycle_btn, _ = entry
                 override_var.set(sig)
                 cycle_btn.config(text=sig[:1].upper(),
                                  fg=SIG_COLOR.get(sig, C["muted"]))
@@ -869,7 +1022,7 @@ class WaysideFrame(tk.Frame):
                 override_btn.pack_forget()
 
         for blk, entry in line["sig_labels"].items():
-            _, _, _, override_var, cycle_btn = entry
+            _, _, _, override_var, cycle_btn, _ = entry
             if visible:
                 cycle_btn.pack()
             else:

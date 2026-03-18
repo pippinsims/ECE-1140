@@ -48,9 +48,10 @@ class WaysideDashboard(tk.Tk):
 
     def initialize_green_line_blocks(self):
         blocks   = {}
-        stations = {2:"PIONEER",9:"EDGEBROOK",16:"STATION",22:"STATION",
-                    31:"SOUTH BANK",48:"STATION",57:"YARD",65:"STATION",
-                    73:"STATION",77:"YARD JUNCTION",105:"STATION",114:"STATION"}
+        stations = {2:"PIONEER", 9:"EDGEBROOK", 16:"STATION", 22:"WHITED",
+                    31:"SOUTH BANK", 39:"CENTRAL", 48:"INGLEWOOD", 57:"OVERBROOK",
+                    65:"GLENBURY", 73:"DORMONT", 77:"MT LEBANON", 88:"POPLAR",
+                    96:"CASTLE SHANNON"}
         junctions = [1,12,28,29,57,58,62,63,77,85,86,100,101]
         crossings = [19]
         for i in range(1, 151):
@@ -75,9 +76,9 @@ class WaysideDashboard(tk.Tk):
 
     def initialize_red_line_blocks(self):
         blocks   = {}
-        stations = {7:"SHADYSIDE",16:"HERRON AVE",21:"SWISSVILLE",
-                    25:"PENN STATION",35:"STEEL PLAZA",45:"FIRST AVE",
-                    48:"STATION SQUARE"}
+        stations = {7:"SHADYSIDE", 16:"HERRON AVE", 21:"SWISSVILLE",
+                    25:"PENN STATION", 35:"STEEL PLAZA", 45:"FIRST AVE",
+                    48:"STATION SQUARE", 60:"SOUTH HILLS JUNCTION"}
         junctions = [1,9,15,27,28,32,33,38,39,43,44,52,53,66,67,72,76]
         crossings = [11,45,47]
         for i in range(1, 77):
@@ -604,6 +605,95 @@ class WaysideDashboard(tk.Tk):
         self.upload_test_btn.config(state="normal", bg=C["orange"], fg="#000000")
         if status_widget:
             status_widget.pack_forget()
+
+    def _show_plc_help(self):
+        """Open a popup window explaining the PLC file syntax."""
+        popup = tk.Toplevel(self)
+        popup.title("How does PLC work?")
+        popup.configure(bg="#1e1e1e")
+        popup.resizable(False, False)
+
+        tk.Label(popup, text="PLC File — Required Syntax",
+                 bg="#007acc", fg="white",
+                 font=("Helvetica", 11, "bold"),
+                 anchor="w", padx=16, pady=8).pack(fill="x")
+
+        content = tk.Text(popup, bg="#1e1e1e", fg="#cccccc",
+                          font=("Courier", 9), relief="flat",
+                          padx=16, pady=12, wrap="none",
+                          width=76, height=32, state="normal", cursor="arrow")
+        content.pack(fill="both", expand=True)
+
+        content.tag_configure("white",  foreground="#cccccc")
+        content.tag_configure("blue",   foreground="#9cdcfe")
+        content.tag_configure("green",  foreground="#4ec994")
+        content.tag_configure("grey",   foreground="#6a9955")
+        content.tag_configure("yellow", foreground="#dcdcaa")
+        content.tag_configure("sep",    foreground="#555555")
+        content.tag_configure("bold",   font=("Courier", 9, "bold"), foreground="#ffffff")
+        content.tag_configure("orange", foreground="#ce9178")
+
+        def ins(text, tag="white"):
+            content.insert("end", text, tag)
+
+        ins("Your PLC file must be a .py file with no spaces in the name.\n")
+        ins("It must define exactly this function:\n\n")
+        ins("─" * 66 + "\n", "sep")
+        ins("\ndef ", "white"); ins("compute_wayside_outputs", "yellow")
+        ins("(\n", "white")
+        ins("        block_state,      ", "blue")
+        ins("# {block_num: {occupied, cmd_speed, authority}}\n", "grey")
+        ins("        block_lengths,    ", "blue")
+        ins("# {block_num: length_in_metres}\n", "grey")
+        ins("        switches_def,     ", "blue")
+        ins("# switch definitions dict for the line\n", "grey")
+        ins("        crossings_list,   ", "blue")
+        ins("# list of block numbers with crossings\n", "grey")
+        ins("        signal_blocks     ", "blue")
+        ins("# set of blocks that have physical signals\n", "grey")
+        ins("):\n", "white")
+        ins("    ", "white"); ins("# Your custom wayside logic here\n", "grey")
+        ins("    return {\n", "white")
+        ins("        'switches'",  "blue"); ins(":  {sw_id: ", "white")
+        ins("'normal'", "green"); ins(" or ", "white")
+        ins("'reverse'", "green"); ins("},\n", "white")
+        ins("        'signals'",   "blue"); ins(":   {block_num: ", "white")
+        ins("'green'", "green"); ins(", ", "white")
+        ins("'yellow'", "yellow"); ins(", ", "white")
+        ins("'red'", "blue"); ins(", or ", "white")
+        ins("None", "orange"); ins("  # None = no signal at this block\n", "grey")
+        ins("        'crossings'", "blue"); ins(": {block_num: ", "white")
+        ins("'active'", "green"); ins(" or ", "white")
+        ins("'inactive'", "blue"); ins("},\n", "white")
+        ins("        'reach'",     "blue"); ins(":     {},\n", "white")
+        ins("    }\n", "white")
+        ins("\n" + "─" * 66 + "\n", "sep")
+        ins("\nSignal placement rules:\n", "bold")
+        ins("  • Only blocks in signal_blocks have physical signals.\n", "grey")
+        ins("  • Return None for any block NOT in signal_blocks.\n", "grey")
+        ins("  • Signal blocks = switch-connected blocks + 1 block\n", "grey")
+        ins("    before/after each station (both directions).\n", "grey")
+        ins("\nNotes:\n", "bold")
+        ins("  • The function is called on every refresh for each line.\n", "grey")
+        ins("  • Empty 'reach' dict disables the authority blue highlight.\n", "grey")
+        ins("  • Upload is rejected if this function is missing.\n", "grey")
+
+        content.config(state="disabled")
+
+        tk.Button(popup, text="OK", width=12,
+                  bg="#007acc", fg="white",
+                  font=("Helvetica", 9, "bold"),
+                  relief="flat", padx=6, pady=5,
+                  cursor="hand2", activebackground="#005f9e",
+                  command=popup.destroy).pack(pady=10)
+
+        popup.update_idletasks()
+        pw = popup.winfo_reqwidth()
+        ph = popup.winfo_reqheight()
+        x  = self.winfo_rootx() + (self.winfo_width()  - pw) // 2
+        y  = self.winfo_rooty() + (self.winfo_height() - ph) // 2
+        popup.geometry(f"+{max(0,x)}+{max(0,y)}")
+        popup.grab_set()
 
     # Keep old method names as aliases so nothing breaks
     def _on_wayside_closed(self, win):
