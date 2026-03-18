@@ -1,5 +1,7 @@
 import sys
+import re
 import math
+from datetime import datetime
 from dataclasses import dataclass
 from PyQt6.QtCore import Qt, QRect, QPoint, QTimer
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont
@@ -135,6 +137,45 @@ RED_LINE_BLOCKS = {
     "S": [(73, 50,  0.0, 55), (74, 50, 0.0, 55), (75, 50, 0.0, 55)],
     "T": [(76, 50,  0.0, 55)],
 }
+
+# Blocks that have a switch: (section, block_num) -> list of "A → B" option strings
+# From default Green Line block info (Infrastructure column)
+GREEN_SWITCHES = {
+    ("C", 12): ["12 → 13", "1 → 13"],           # SWITCH (12-13; 1-13)
+    ("F", 28): ["28 → 29", "150 → 28"],         # SWITCH (28-29; 150-28)
+    ("J", 58): ["57 → yard"],                    # SWITCH TO YARD (57-yard)
+    ("J", 62): ["Yard → 63"],                   # SWITCH FROM YARD (Yard-63)
+    ("M", 76): ["76 → 77", "77 → 101"],         # SWITCH (76-77;77-101)
+    ("N", 85): ["85 → 86", "100 → 85"],         # SWITCH (85-86; 100-85)
+}
+# From default Red Line block info (Infrastructure column)
+RED_SWITCHES = {
+    ("C", 9): ["75 → yard", "yard → 75"],      # SWITCH TO/FROM YARD (75-yard)
+    ("E", 15): ["15 → 16", "1 → 16"],          # SWITCH (15-16; 1-16)
+    ("H", 27): ["27 → 28", "27 → 76"],         # SWITCH (27-28; 27-76)
+    ("H", 32): ["32 → 33", "33 → 72"],         # SWITCH (32-33; 33-72)
+    ("H", 38): ["38 → 39", "38 → 71"],         # SWITCH (38-39; 38-71)
+    ("H", 43): ["43 → 44", "44 → 67"],         # SWITCH (43-44; 44-67)
+    ("J", 52): ["52 → 53", "52 → 66"],         # SWITCH (52-53; 52-66)
+}
+
+# Railroad crossings from the provided block details (Infrastructure column).
+# Key is the block that CONTAINS the crossing; messages are generated when a train is
+# 1 block BEFORE (down) and 1 block AFTER (up).
+GREEN_RAIL_CROSSINGS = {19, 108}  # E-19, T-108
+RED_RAIL_CROSSINGS = {11, 47}     # D-11, I-47
+
+# Stations from block details (Green + Red) for Schedule Info From/To dropdowns
+SCHEDULE_STATIONS = [
+    "Yard",
+    # Green Line stations
+    "Castle Shannon", "Central", "Dormont", "Edgebrook", "Glenbury",
+    "Inglewood", "Mt Lebanon", "Overbrook", "Pioneer", "Poplar",
+    "South Bank", "Whited",
+    # Red Line stations
+    "First Ave", "Herron Ave", "Penn Station", "Shadyside",
+    "South Hills Junction", "Station Square", "Steel Plaza", "Swissville",
+]
 
 # -----------------------------
 # Data helpers
@@ -796,13 +837,68 @@ class MainWindow(QMainWindow):
         self.block_combo = QComboBox()
         self.block_combo.setEnabled(False)
         self.block_combo.addItem("— click a section on the track —")
-        self.block_combo.currentIndexChanged.connect(self.on_left_block_changed)
+        self.block_combo.currentIndexChanged.connect(self._on_block_combo_changed)
         left_layout.addWidget(self.block_combo)
 
-        self.block_list = QListWidget()
-        self.block_list.itemSelectionChanged.connect(self.on_left_list_selected)
-        left_layout.addWidget(self.block_list, stretch=1)
+        # Block information area (replaces block list): Suggested Speed, Suggested Authority, Switch, Maintenance
+        self.detail_card = QFrame()
+        self.detail_card.setStyleSheet(
+            "background:#e8ecf4; border:1px solid #b0b8cc; border-radius:8px;")
+        # Reserve enough height for all content (including switch row) so layout doesn't shift when toggling maintenance
+        self.detail_card.setMinimumHeight(200)
+        detail_lay = QVBoxLayout(self.detail_card)
+        detail_lay.setContentsMargins(10, 8, 10, 8)
+        detail_lay.setSpacing(8)
+        self.maint_check = QCheckBox("Maintenance")
+        self.maint_check.setStyleSheet("font-weight:600;")
+        self.maint_check.toggled.connect(self._on_maint_toggled)
+        detail_lay.addWidget(self.maint_check)
+        self.detail_title_lbl = QLabel("")
+        self.detail_title_lbl.setStyleSheet(
+            "border:1px solid #999; border-radius:4px; padding:3px 6px; background:white;")
+        detail_lay.addWidget(self.detail_title_lbl)
+        self.detail_placeholder = QLabel("Select a block from the dropdown above.")
+        self.detail_placeholder.setStyleSheet("color:#666; font-style:italic;")
+        self.detail_placeholder.setWordWrap(True)
+        detail_lay.addWidget(self.detail_placeholder)
+        self.speed_auth_frame = QFrame()
+        self.speed_auth_frame.setStyleSheet(
+            "border:1px solid #999; border-radius:4px; background:white;")
+        sa_lay = QVBoxLayout(self.speed_auth_frame)
+        sa_lay.setContentsMargins(6, 4, 6, 4)
+        self.speed_label = QLabel("Suggested Speed:")
+        self.speed_edit = QLineEdit()
+        self.speed_edit.setPlaceholderText("—")
+        self.speed_edit.setReadOnly(True)
+        self.speed_edit.setMinimumWidth(80)  # stable width so "0 mph" / "28.0 mph" don't shift layout
+        sa_lay.addWidget(self.speed_label)
+        sa_lay.addWidget(self.speed_edit)
+        self.auth_label = QLabel("Suggested Authority:")
+        self.auth_edit = QLineEdit()
+        self.auth_edit.setPlaceholderText("—")
+        self.auth_edit.setReadOnly(True)
+        self.auth_edit.setMinimumWidth(80)  # stable width so "N/A" / "328.1 ft" don't shift layout
+        sa_lay.addWidget(self.auth_label)
+        sa_lay.addWidget(self.auth_edit)
+        detail_lay.addWidget(self.speed_auth_frame)
+        self.speed_auth_frame.hide()
+        self.switch_row = QHBoxLayout()
+        self.switch_lbl = QLabel("Switch:")
+        self.switch_combo_detail = QComboBox()
+        self.switch_combo_detail.setMinimumWidth(120)
+        self.switch_combo_detail.currentTextChanged.connect(self._on_switch_changed)
+        self.switch_row.addWidget(self.switch_lbl)
+        self.switch_row.addWidget(self.switch_combo_detail, stretch=1)
+        self.switch_widget = QWidget()
+        self.switch_widget.setLayout(self.switch_row)
+        self.switch_widget.setStyleSheet("background:transparent; border:none;")
+        detail_lay.addWidget(self.switch_widget)
+        self.switch_widget.hide()
+        detail_lay.addStretch(1)
+        left_layout.addWidget(self.detail_card, stretch=1)
 
+        # Keep left panel height stable so toggling maintenance doesn't shift the whole layout
+        left.setMinimumHeight(260)
         bottom.addWidget(left, stretch=1)
 
         # Center: Schedule Info
@@ -853,38 +949,63 @@ class MainWindow(QMainWindow):
 
         cards.addWidget(auto_card)
 
-        # Existing/Manual card
+        # Manual schedule card
         man_card = QFrame()
         man_card.setStyleSheet(
             "background:#f0f0f0; border:2px solid #c8c8c8; border-radius:10px;")
         man_grid = QGridLayout(man_card)
         man_grid.setContentsMargins(10, 10, 10, 10)
 
-        btn_exist = QPushButton("Existing")
-        btn_exist.setStyleSheet(
-            "background:#e0e0e0; padding:6px 10px; border-radius:8px;")
-        btn_manual = QPushButton("Manual")
-        btn_manual.setStyleSheet(
-            "background:#4a6fa5; padding:6px 10px; border-radius:8px;")
-        man_grid.addWidget(btn_exist, 0, 0)
-        man_grid.addWidget(btn_manual, 0, 1)
-
-        man_grid.addWidget(QLabel("Destination:"), 1, 0)
+        man_grid.addWidget(QLabel("From:"), 0, 0)
+        self.origin_combo = QComboBox()
+        self.origin_combo.addItems(SCHEDULE_STATIONS)
+        man_grid.addWidget(self.origin_combo, 0, 1)
+        man_grid.addWidget(QLabel("To:"), 1, 0)
         self.dest_combo = QComboBox()
-        self.dest_combo.addItems(
-            ["Castle Shannon", "Pioneer", "Downtown"])
+        self.dest_combo.addItems(SCHEDULE_STATIONS)
         man_grid.addWidget(self.dest_combo, 1, 1)
-
-        man_grid.addWidget(QLabel("Time:"), 2, 0)
+        man_grid.addWidget(QLabel("Arrival Time (HH:MM):"), 2, 0)
         self.time_entry = QLineEdit("00:00")
         man_grid.addWidget(self.time_entry, 2, 1)
-
-        btn_confirm = QPushButton("Confirm")
-        btn_confirm.setStyleSheet(
-            "background:#e0e0e0; padding:6px 10px; border-radius:8px;")
-        man_grid.addWidget(btn_confirm, 3, 0, 1, 2)
+        self.btn_man_load = QPushButton("Load")
+        self.btn_man_load.setStyleSheet(
+            "background:#4a6fa5; color:white; font-weight:bold; padding:6px 10px; border-radius:8px;")
+        self.btn_man_load.clicked.connect(self._on_manual_load)
+        man_grid.addWidget(self.btn_man_load, 3, 0, 1, 2)
 
         cards.addWidget(man_card)
+
+        # Existing train: change destination
+        exist_card = QFrame()
+        exist_card.setStyleSheet(
+            "background:#f0f0f0; border:2px solid #c8c8c8; border-radius:10px;")
+        exist_grid = QGridLayout(exist_card)
+        exist_grid.setContentsMargins(10, 10, 10, 10)
+        exist_grid.setHorizontalSpacing(8)
+        exist_grid.setVerticalSpacing(6)
+
+        exist_grid.addWidget(QLabel("Train:"), 0, 0)
+        self.exist_train_combo = QComboBox()
+        self.exist_train_combo.setEnabled(False)
+        self.exist_train_combo.addItem("No editable trains")
+        exist_grid.addWidget(self.exist_train_combo, 0, 1)
+
+        exist_grid.addWidget(QLabel("New Destination:"), 1, 0)
+        self.exist_dest_combo = QComboBox()
+        self.exist_dest_combo.addItems(SCHEDULE_STATIONS)
+        exist_grid.addWidget(self.exist_dest_combo, 1, 1)
+
+        exist_grid.addWidget(QLabel("New Arrival (HH:MM):"), 2, 0)
+        self.exist_arrival_entry = QLineEdit("00:00")
+        exist_grid.addWidget(self.exist_arrival_entry, 2, 1)
+
+        self.btn_change_dest = QPushButton("Apply")
+        self.btn_change_dest.setStyleSheet(
+            "background:#4a6fa5; color:white; font-weight:bold; padding:6px 10px; border-radius:8px;")
+        self.btn_change_dest.clicked.connect(self._on_change_destination)
+        exist_grid.addWidget(self.btn_change_dest, 3, 0, 1, 2)
+
+        cards.addWidget(exist_card)
 
         # Big gray info box
         big = QFrame()
@@ -892,12 +1013,12 @@ class MainWindow(QMainWindow):
             "background:#d9d9d9; border:2px solid #c8c8c8; border-radius:10px;")
         big_layout = QVBoxLayout(big)
         big_layout.addStretch(1)
-        msg = QLabel(
+        self.info_msg = QLabel(
             "(Schedule details / messages / upcoming trains would display here)")
-        msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        msg.setStyleSheet("color:#333333;")
-        msg.setWordWrap(True)
-        big_layout.addWidget(msg)
+        self.info_msg.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.info_msg.setStyleSheet("color:#333333;")
+        self.info_msg.setWordWrap(True)
+        big_layout.addWidget(self.info_msg)
         big_layout.addStretch(1)
 
         center_layout.addWidget(big, stretch=1)
@@ -927,10 +1048,10 @@ class MainWindow(QMainWindow):
         sch_lbl.setStyleSheet("font-weight:800;")
         right_layout.addWidget(sch_lbl)
 
-        # Table — columns: Train, Line, Section, Block
-        self.schedule_table = QTableWidget(0, 4)
+        # Table — columns: Line, Section, Block (no train ID)
+        self.schedule_table = QTableWidget(0, 3)
         self.schedule_table.setHorizontalHeaderLabels(
-            ["Train", "Line", "Section", "Block"])
+            ["Line", "Section", "Block"])
         self.schedule_table.verticalHeader().setVisible(False)
         self.schedule_table.setFixedHeight(140)
 
@@ -942,6 +1063,7 @@ class MainWindow(QMainWindow):
 
         # Use a stacked-style container so label and table occupy same space
         trains_stack = QWidget()
+        trains_stack.setFixedHeight(140)  # prevent layout shift when toggling table/label visibility
         trains_stack_layout = QVBoxLayout(trains_stack)
         trains_stack_layout.setContentsMargins(0, 0, 0, 0)
         trains_stack_layout.addWidget(self.schedule_table)
@@ -949,13 +1071,13 @@ class MainWindow(QMainWindow):
         self._refresh_trains_view()
         right_layout.addWidget(trains_stack)
 
-        thr_lbl = QLabel("Throughput (P/Hr/Ln)")
+        thr_lbl = QLabel("Ticket Sales")
         thr_lbl.setStyleSheet("font-weight:800;")
         right_layout.addWidget(thr_lbl)
 
         self.thru_table = QTableWidget(2, 2)
         self.thru_table.setHorizontalHeaderLabels(
-            ["Line", "Throughput (P/Hr/Ln)"])
+            ["Line", "Ticket Sales"])
         self.thru_table.verticalHeader().setVisible(False)
         self.thru_table.setItem(0, 0, QTableWidgetItem("Red Line"))
         self.thru_table.setItem(0, 1, QTableWidgetItem("100"))
@@ -973,6 +1095,14 @@ class MainWindow(QMainWindow):
         self._train_timer.timeout.connect(self._poll_active_trains)
         self._train_timer.start()
 
+        self._current_line = None
+        self._current_section = None
+        self._external_trains = {}
+        self._maint_occupancy_id = None
+        self._manual_train_counter = 0
+        self._pending_timers = []
+        self._rail_cross_state = {}  # (line_short, crossing_block) -> "down" | "up" | None
+
     # ── Interactions ──────────────────────────────────────────────────────────
 
     def _update_block_panel(self, label, line: str, track_widget):
@@ -984,9 +1114,16 @@ class MainWindow(QMainWindow):
             self.block_combo.addItem("— click a section on the track —")
             self.block_combo.setEnabled(False)
             self.block_combo.blockSignals(False)
-            self.block_list.clear()
+            if self._maint_occupancy_id is not None:
+                self.remove_train(self._maint_occupancy_id)
+                self._maint_occupancy_id = None
+            self.detail_card.hide()
+            self._current_line = None
+            self._current_section = None
             return
 
+        self._current_line = line
+        self._current_section = label
         data_src = GREEN_LINE_BLOCKS if line == "Green Line" else RED_LINE_BLOCKS
         blocks = data_src.get(label, [])
 
@@ -995,6 +1132,7 @@ class MainWindow(QMainWindow):
         self.block_combo.blockSignals(True)
         self.block_combo.clear()
         if blocks:
+            self.block_combo.addItem("Select a block")
             for bn, length, grade, spd in blocks:
                 self.block_combo.addItem(f"Block {bn}")
             self.block_combo.setEnabled(True)
@@ -1003,13 +1141,262 @@ class MainWindow(QMainWindow):
             self.block_combo.setEnabled(False)
         self.block_combo.blockSignals(False)
 
-        self.block_list.blockSignals(True)
-        self.block_list.clear()
-        for bn, length, grade, spd in blocks:
-            self.block_list.addItem(QListWidgetItem(f"Block {bn}"))
-        self.block_list.blockSignals(False)
+        self.detail_card.show()
+        self.detail_placeholder.show()
+        self.speed_auth_frame.hide()
+        self.switch_widget.hide()
 
         track_widget.update()
+
+    def _on_block_combo_changed(self, idx: int):
+        """Show block info: Suggested Speed, Suggested Authority, and Switch when applicable."""
+        text = self.block_combo.itemText(idx)
+        parts = text.split()
+        if len(parts) < 2 or not parts[-1].isdigit():
+            self.detail_placeholder.show()
+            self.detail_title_lbl.hide()
+            self.speed_auth_frame.hide()
+            self.switch_widget.hide()
+            return
+        bn = int(parts[-1])
+        if self._current_section is None or self._current_line is None:
+            self.detail_placeholder.show()
+            self.speed_auth_frame.hide()
+            self.switch_widget.hide()
+            return
+        data_src = GREEN_LINE_BLOCKS if self._current_line == "Green Line" else RED_LINE_BLOCKS
+        blocks = data_src.get(self._current_section, [])
+        info = next((b for b in blocks if b[0] == bn), None)
+        if info is None:
+            self.detail_placeholder.show()
+            self.speed_auth_frame.hide()
+            self.switch_widget.hide()
+            return
+        _, length_m, grade, speed_kmh = info
+        speed_mph = round(speed_kmh * 0.621371, 1)
+        length_ft = round(length_m * 3.28084, 1)
+        if self._maint_occupancy_id is not None:
+            self.remove_train(self._maint_occupancy_id)
+            self._maint_occupancy_id = None
+        self.detail_placeholder.hide()
+        self.detail_title_lbl.show()
+        self.maint_check.blockSignals(True)
+        self.maint_check.setChecked(False)
+        self.maint_check.blockSignals(False)
+        self.detail_title_lbl.setText(f"Block Details (Block {bn}, {self._current_line})")
+        self.speed_edit.setText(f"{speed_mph} mph")
+        self.auth_edit.setText(f"{length_ft} ft")
+        self.speed_edit.setReadOnly(True)
+        self.auth_edit.setReadOnly(True)
+        self.speed_auth_frame.show()
+        sw_src = GREEN_SWITCHES if self._current_line == "Green Line" else RED_SWITCHES
+        sw_opts = sw_src.get((self._current_section, bn), [])
+        self.switch_combo_detail.clear()
+        if sw_opts:
+            self.switch_combo_detail.addItems(sw_opts)
+            self.switch_widget.show()
+            self.switch_combo_detail.setEnabled(False)
+        else:
+            self.switch_widget.hide()
+
+    def _on_maint_toggled(self, checked: bool):
+        """In maintenance mode: allow editing Suggested Speed, Authority, and Switch; mark block occupied."""
+        # Freeze layout so toggling maintenance doesn't cause a visible shift
+        central = self.centralWidget()
+        if central:
+            central.setUpdatesEnabled(False)
+        try:
+            # Keep block dropdown always enabled so it never gets stuck when toggling maintenance
+            if self._current_section is not None and self.block_combo.isEnabled() is False:
+                self.block_combo.setEnabled(True)
+            text = self.block_combo.currentText()
+            parts = text.split()
+            bn = None
+            if len(parts) >= 2 and parts[-1].isdigit():
+                bn = int(parts[-1])
+            sw_src = GREEN_SWITCHES if self._current_line == "Green Line" else RED_SWITCHES
+            has_switch = bool(sw_src.get((self._current_section, bn), [])) if bn is not None else False
+            if checked:
+                self.speed_edit.setReadOnly(False)
+                self.auth_edit.setReadOnly(False)
+                self.speed_edit.setText("0 mph")
+                self.auth_edit.setText("N/A")
+                if has_switch:
+                    self.switch_widget.show()
+                    self.switch_combo_detail.setEnabled(True)
+                    self.switch_combo_detail.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+                else:
+                    self.switch_widget.hide()
+                if bn is not None and self._current_section is not None and self._current_line is not None:
+                    self._maint_occupancy_id = f"Maint-{bn}"
+                    def _deferred_inject():
+                        self.inject_train(self._maint_occupancy_id, self._current_line, self._current_section, bn)
+                        if central:
+                            central.setUpdatesEnabled(True)
+                    QTimer.singleShot(0, _deferred_inject)
+                    return  # unfreeze happens in deferred callback
+            else:
+                if self._maint_occupancy_id is not None:
+                    self.remove_train(self._maint_occupancy_id)
+                    self._maint_occupancy_id = None
+                self.speed_edit.setReadOnly(True)
+                self.auth_edit.setReadOnly(True)
+                if has_switch:
+                    self.switch_combo_detail.setEnabled(False)
+                if bn is not None:
+                    data_src = GREEN_LINE_BLOCKS if self._current_line == "Green Line" else RED_LINE_BLOCKS
+                    blocks = data_src.get(self._current_section, [])
+                    info = next((b for b in blocks if b[0] == bn), None)
+                    if info:
+                        _, length_m, _, speed_kmh = info
+                        self.speed_edit.setText(f"{round(speed_kmh * 0.621371, 1)} mph")
+                        self.auth_edit.setText(f"{round(length_m * 3.28084, 1)} ft")
+                if not has_switch:
+                    self.switch_widget.hide()
+        finally:
+            if central and not checked:
+                central.setUpdatesEnabled(True)
+
+    def _on_switch_changed(self, text: str):
+        if not text:
+            return
+        if not self.maint_check.isChecked():
+            return
+        block_text = self.block_combo.currentText()
+        if block_text in ("Select a block", "— click a section on the track —", "No blocks defined"):
+            return
+        parts = block_text.split()
+        if len(parts) < 2 or not parts[-1].isdigit():
+            return
+        bn = int(parts[-1])
+        sw_src = GREEN_SWITCHES if self._current_line == "Green Line" else RED_SWITCHES
+        if (self._current_section, bn) not in sw_src:
+            return
+        line_short = "Green" if self._current_line == "Green Line" else "Red"
+        self.info_msg.setText(f"Switch at Block {bn} ({line_short} Line, Section {self._current_section}) has been set to {text}.")
+        self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
+
+    def inject_train(self, train_id: str, line: str, section: str, block: int):
+        """Add a train (manual or maintenance) to the active list."""
+        prev = self._external_trains.get(train_id, {})
+        self._external_trains[train_id] = {
+            **prev,
+            "line": line,
+            "section": section,
+            "block": block,
+        }
+        self._poll_active_trains()
+
+    def remove_train(self, train_id: str):
+        """Remove a train from the active list."""
+        self._external_trains.pop(train_id, None)
+        self._poll_active_trains()
+
+    def _refresh_existing_train_combo(self):
+        """Refresh the train dropdown used to change destinations (manual/external trains only)."""
+        self.exist_train_combo.blockSignals(True)
+        current_id = self.exist_train_combo.currentData()
+        self.exist_train_combo.clear()
+
+        # Only allow editing of non-simulation trains (manual/external/maintenance)
+        items = []
+        for tid, info in getattr(self, "_external_trains", {}).items():
+            line = info.get("line", "")
+            section = info.get("section", "")
+            block = info.get("block", "")
+            label = f"{line} — Sec {section} — Blk {block}"
+            items.append((label, tid))
+
+        if not items:
+            self.exist_train_combo.addItem("No editable trains", None)
+            self.exist_train_combo.setEnabled(False)
+            self.btn_change_dest.setEnabled(False)
+        else:
+            for label, tid in items:
+                self.exist_train_combo.addItem(label, tid)
+            self.exist_train_combo.setEnabled(True)
+            self.btn_change_dest.setEnabled(True)
+
+            # keep previous selection if possible
+            if current_id is not None:
+                for i in range(self.exist_train_combo.count()):
+                    if self.exist_train_combo.itemData(i) == current_id:
+                        self.exist_train_combo.setCurrentIndex(i)
+                        break
+
+        self.exist_train_combo.blockSignals(False)
+
+    def _on_change_destination(self):
+        """Change destination and/or arrival time for an existing (manual/external) train."""
+        tid = self.exist_train_combo.currentData()
+        if not tid:
+            return
+        new_dest = self.exist_dest_combo.currentText()
+        new_arrival = self.exist_arrival_entry.text().strip()
+        if not re.match(r"^\d{1,2}:\d{2}$", new_arrival):
+            self.info_msg.setText("Error: Arrival time must be in HH:MM format (e.g. 14:30).")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        hh, mm = new_arrival.split(":")
+        h, m = int(hh), int(mm)
+        if h < 0 or h > 23 or m < 0 or m > 59:
+            self.info_msg.setText("Error: Invalid time (hours 00–23, minutes 00–59).")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        info = self._external_trains.get(tid)
+        if not info:
+            return
+        info["dest"] = new_dest
+        info["arrival"] = new_arrival
+        line = info.get("line", "")
+        section = info.get("section", "")
+        block = info.get("block", "")
+        self.info_msg.setText(
+            f"Train updated ({line}, Sec {section}, Blk {block}) → Dest: {new_dest}, Arrival: {new_arrival}.")
+        self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
+
+    def _on_manual_load(self):
+        """Validate manual schedule (From/To/Arrival Time). Train departs immediately; arrival time is scheduled (movement is handled elsewhere)."""
+        time_str = self.time_entry.text().strip()
+        if not re.match(r"^\d{1,2}:\d{2}$", time_str):
+            self.info_msg.setText("Error: Arrival time must be in HH:MM format (e.g. 14:30).")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        parts = time_str.split(":")
+        h, m = int(parts[0]), int(parts[1])
+        if h < 0 or h > 23 or m < 0 or m > 59:
+            self.info_msg.setText("Error: Invalid time (hours 00–23, minutes 00–59).")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        origin = self.origin_combo.currentText()
+        dest = self.dest_combo.currentText()
+        if origin == dest:
+            self.info_msg.setText("Error: Origin and destination cannot be the same.")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        now = datetime.now()
+        arrival_time = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if arrival_time <= now:
+            self.info_msg.setText("Error: Arrival time must be in the future.")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        # Train departs right away (no movement in this code — handled elsewhere)
+        # Do not generate a per-dispatch train ID. Keep a single manual-dispatch entry.
+        train_id = "Manual"
+        line = "Green Line"
+        section, block = "A", 1
+        # Store route metadata for other modules (movement handled elsewhere)
+        self._external_trains[train_id] = {
+            "line": line,
+            "section": section,
+            "block": block,
+            "origin": origin,
+            "dest": dest,
+            "arrival": time_str,
+        }
+        self._poll_active_trains()
+        self.info_msg.setText(f"Train has departed from {origin} to {dest}. Scheduled arrival at {time_str}.")
+        self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
     def on_block_clicked(self, label, line: str):
         self._update_block_panel(label, line, self.track)
@@ -1042,62 +1429,96 @@ class MainWindow(QMainWindow):
 
     def _poll_active_trains(self):
         """Called every second. Advances the simulation clock and refreshes the table."""
-        if not getattr(self, "_sim_running", False):
-            return
-
-        # Advance simulation clock by speed_slider value each real second.
-        # At slider=60: 1 sim-minute per real-second → 90-min run in ~90 s.
-        self._sim_time_sec += self.speed_slider.value()
+        if getattr(self, "_sim_running", False):
+            self._sim_time_sec += self.speed_slider.value()
 
         trains = []
         if getattr(self, "_sim_schedule", None) == "Default Green":
             end_sec = DEFAULT_GREEN_WAYPOINTS[-1][0]
             for i in range(_GREEN_NUM_TRAINS):
                 train_num   = i + 1
-                train_start = i * _GREEN_TRAIN_GAP_SEC          # offset for this train
-                train_t     = self._sim_time_sec - train_start   # time from this train's start
+                train_start = i * _GREEN_TRAIN_GAP_SEC
+                train_t     = self._sim_time_sec - train_start
 
-                if train_t < 0:
-                    continue   # not dispatched yet
-                if train_t > end_sec:
-                    continue   # run completed
-
-                # Find the most recent waypoint for this train
+                if train_t < 0 or train_t > end_sec:
+                    continue
                 current_wp = DEFAULT_GREEN_WAYPOINTS[0]
                 for wp in DEFAULT_GREEN_WAYPOINTS:
                     if wp[0] <= train_t:
                         current_wp = wp
                     else:
                         break
-
                 _, section, block, station = current_wp
-                label = f"T-{train_num:02d}"
                 detail = f"Blk {block}"
                 if station:
                     detail += f" — {station}"
                 trains.append({
-                    "train":   label,
+                    "train":   f"T-{train_num:02d}",
                     "line":    "Green",
                     "section": section,
                     "block":   detail,
                 })
 
+        for tid, info in getattr(self, "_external_trains", {}).items():
+            line = info["line"].replace(" Line", "") if " Line" in info["line"] else info["line"]
+            trains.append({
+                "train":   tid,
+                "line":    line,
+                "section": info["section"],
+                "block":   f"Blk {info['block']}",
+            })
+
         self.schedule_table.setRowCount(len(trains))
         for row, t in enumerate(trains):
-            self.schedule_table.setItem(row, 0, QTableWidgetItem(t["train"]))
-            self.schedule_table.setItem(row, 1, QTableWidgetItem(t["line"]))
-            self.schedule_table.setItem(row, 2, QTableWidgetItem(t["section"]))
-            self.schedule_table.setItem(row, 3, QTableWidgetItem(t["block"]))
+            self.schedule_table.setItem(row, 0, QTableWidgetItem(t["line"]))
+            self.schedule_table.setItem(row, 1, QTableWidgetItem(t["section"]))
+            self.schedule_table.setItem(row, 2, QTableWidgetItem(t["block"]))
 
         self._refresh_trains_view()
+        self._refresh_existing_train_combo()
 
-        # Push occupied sections to the track widget so they render black
-        occupied = {t["section"] for t in trains if t["line"] == "Green"}
-        self.track.train_sections = occupied
+        # ── Railroad crossing messages (no occupancy changes) ─────────────────
+        def _blk_num(block_str: str) -> int | None:
+            m = re.search(r"\bBlk\s+(\d+)\b", block_str)
+            return int(m.group(1)) if m else None
+
+        occupied_blocks = {"Green": set(), "Red": set()}
+        for t in trains:
+            bn = _blk_num(t.get("block", ""))
+            if bn is None:
+                continue
+            if t.get("line") in occupied_blocks:
+                occupied_blocks[t["line"]].add(bn)
+
+        def _handle_crossings(line_short: str, crossings: set[int]):
+            occ = occupied_blocks.get(line_short, set())
+            for c in crossings:
+                desired = None
+                if (c - 1) in occ:
+                    desired = "down"
+                elif (c + 1) in occ:
+                    desired = "up"
+                key = (line_short, c)
+                if desired and self._rail_cross_state.get(key) != desired:
+                    self._rail_cross_state[key] = desired
+                    if desired == "down":
+                        self.info_msg.setText("Railroad crossings are down.")
+                    else:
+                        self.info_msg.setText("Railroad crossings are up.")
+                    self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
+
+        _handle_crossings("Green", GREEN_RAIL_CROSSINGS)
+        _handle_crossings("Red", RED_RAIL_CROSSINGS)
+
+        occupied_green = {t["section"] for t in trains if t["line"] == "Green"}
+        occupied_red   = {t["section"] for t in trains if t["line"] == "Red"}
+        self.track.train_sections = occupied_green
+        self.red_track.train_sections = occupied_red
         self.track.update()
+        self.red_track.update()
 
-        # Once all trains have finished, stop the simulation and reset button
-        if self._sim_running and len(trains) == 0:
+        sim_trains = [t for t in trains if t["line"] == "Green" and isinstance(t.get("train"), str) and t["train"].startswith("T-")]
+        if getattr(self, "_sim_running", False) and len(sim_trains) == 0:
             last_train_end = DEFAULT_GREEN_WAYPOINTS[-1][0] + (_GREEN_NUM_TRAINS - 1) * _GREEN_TRAIN_GAP_SEC
             if self._sim_time_sec > last_train_end:
                 self._sim_running = False
