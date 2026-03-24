@@ -46,6 +46,20 @@ DEFAULT_GREEN_WAYPOINTS = [
 _GREEN_NUM_TRAINS    = 10
 _GREEN_TRAIN_GAP_SEC = 3 * 60   # 3 minutes between each train dispatch
 
+# Station name -> (section, block) for manual dispatch start positions.
+# We derive this from the default schedule waypoints so the UI starts the train
+# where it would first appear in the station sequence.
+GREEN_STATION_TO_START = {}
+for _t, _sec, _blk, _st in DEFAULT_GREEN_WAYPOINTS:
+    if not _st:
+        continue
+    # Keep the first occurrence to avoid later duplicates (e.g., Dormont repeats).
+    if _st not in GREEN_STATION_TO_START:
+        GREEN_STATION_TO_START[_st] = (_sec, _blk)
+
+# "Yard" is treated as the beginning of the Green line run.
+GREEN_STATION_TO_START["Yard"] = ("A", 1)
+
 GREEN_LINE_BLOCKS = {
     "A": [(1,  100,  0.5, 45), (2,  100, 1.0,  45), (3,  100, 1.5,  45)],
     "B": [(4,  100,  2.0, 45), (5,  100, 3.0,  45), (6,  100, 4.0,  45)],
@@ -177,6 +191,34 @@ SCHEDULE_STATIONS = [
     "South Hills Junction", "Station Square", "Steel Plaza", "Swissville",
 ]
 
+# Station → section anchor (approx) for drawing station lights on each line.
+# These anchors correspond to section labels drawn on the diagrams.
+GREEN_STATION_ANCHORS = {
+    "Pioneer": "A",
+    "Edgebrook": "C",
+    "Whited": "F",
+    "South Bank": "G",
+    "Central": "I",
+    "Inglewood": "I",
+    "Overbrook": "W",
+    "Glenbury": "K",
+    "Dormont": "L",
+    "Mt Lebanon": "N",
+    "Poplar": "O",
+    "Castle Shannon": "P",
+}
+
+RED_STATION_ANCHORS = {
+    "Shadyside": "C",
+    "Herron Ave": "F",
+    "Swissville": "G",
+    "Penn Station": "H",
+    "Steel Plaza": "H",
+    "First Ave": "H",
+    "Station Square": "I",
+    "South Hills Junction": "L",
+}
+
 # -----------------------------
 # Data helpers
 # -----------------------------
@@ -305,6 +347,13 @@ class TrackDiagramWidget(QWidget):
         self.click_regions: list[ClickRegion] = []
         self.selected_section: str | None = None
         self.train_sections: set = set()   # sections currently occupied by a train
+        # (station_name, position) -> "green" | "yellow" | "red"
+        # position ∈ {"before","after"}
+        self.station_light_overrides: dict[tuple[str, str], str] = {}
+
+    def _station_light_color(self, station: str, position: str) -> str:
+        color = self.station_light_overrides.get((station, position))
+        return color if color in ("green", "yellow", "red") else "green"
 
     def _c(self, name: str) -> QColor:
         """Return the colour for a track section based on its state."""
@@ -559,6 +608,33 @@ class TrackDiagramWidget(QWidget):
                            P["T"].y())            + QPoint(0, OFF),
         }
 
+        # ── Station lights (before / at / after) ─────────────────────────────
+        _LIGHT_COLORS = {
+            "green":  (QColor("#22aa44"), QColor("#115522")),
+            "yellow": (QColor("#ddaa00"), QColor("#886600")),
+            "red":    (QColor("#cc2222"), QColor("#881111")),
+        }
+
+        def _draw_station_lights(station_name: str, anchor_section: str):
+            anchor = label_pts.get(anchor_section)
+            if anchor is None:
+                return
+            # Place two lights near the anchor point (slightly above track).
+            base = anchor + QPoint(0, -34)
+            pts = {
+                "before": base + QPoint(-18, 0),
+                "after":  base + QPoint(18, 0),
+            }
+            for pos, cpt in pts.items():
+                col = self._station_light_color(station_name, pos)
+                fill, ring = _LIGHT_COLORS[col]
+                p.setPen(QPen(ring, 2))
+                p.setBrush(fill)
+                p.drawEllipse(cpt, 6, 6)
+
+        for st, sec in GREEN_STATION_ANCHORS.items():
+            _draw_station_lights(st, sec)
+
         for name, lpt in label_pts.items():
             self._label(p, name, lpt, highlight=False)
 
@@ -725,6 +801,32 @@ class RedLineDiagramWidget(TrackDiagramWidget):
             # Yard: bottom of spur, shifted right to clear D label
             "Yard": pt(xYD + 40, yYard),
         }
+
+        # ── Station lights (before / at / after) ─────────────────────────────
+        _LIGHT_COLORS = {
+            "green":  (QColor("#22aa44"), QColor("#115522")),
+            "yellow": (QColor("#ddaa00"), QColor("#886600")),
+            "red":    (QColor("#cc2222"), QColor("#881111")),
+        }
+
+        def _draw_station_lights(station_name: str, anchor_section: str):
+            anchor = label_pts.get(anchor_section)
+            if anchor is None:
+                return
+            base = anchor + QPoint(0, -30)
+            pts = {
+                "before": base + QPoint(-18, 0),
+                "after":  base + QPoint(18, 0),
+            }
+            for pos, cpt in pts.items():
+                col = self._station_light_color(station_name, pos)
+                fill, ring = _LIGHT_COLORS[col]
+                p.setPen(QPen(ring, 2))
+                p.setBrush(fill)
+                p.drawEllipse(cpt, 6, 6)
+
+        for st, sec in RED_STATION_ANCHORS.items():
+            _draw_station_lights(st, sec)
 
         for name, lpt in label_pts.items():
             self._label(p, name, lpt)
@@ -1089,9 +1191,9 @@ class MainWindow(QMainWindow):
         right_layout.addStretch(1)
         bottom.addWidget(right, stretch=1)
 
-        # ── 1-second refresh timer for Active Trains table ────────────────────
+        # ── Refresh timer for Active Trains table ────────────────────────────
         self._train_timer = QTimer(self)
-        self._train_timer.setInterval(1000)   # 1 000 ms = 1 s
+        self._train_timer.setInterval(100)   # 100 ms = 0.1 s
         self._train_timer.timeout.connect(self._poll_active_trains)
         self._train_timer.start()
 
@@ -1355,6 +1457,50 @@ class MainWindow(QMainWindow):
             f"Train updated ({line}, Sec {section}, Blk {block}) → Dest: {new_dest}, Arrival: {new_arrival}.")
         self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
+    def set_station_light(self, line: str, station: str, position: str, color: str):
+        """
+        Record a change to a station signal light and show a message.
+
+        This is intended to be called by another module that already decided the
+        new aspect for a given signal; this UI does NOT compute signalling logic.
+
+        Parameters
+        ----------
+        line: "Green" or "Red"
+        station: station name as shown in your schedules (e.g. "Central")
+        position: one of "before", "after"
+        color: "green", "yellow", or "red"  (traffic-light colours)
+        """
+        line_short = line.strip().title()
+        if line_short not in ("Green", "Red"):
+            return
+
+        pos_norm = position.strip().lower()
+        if pos_norm not in ("before", "after"):
+            return
+
+        color_norm = color.strip().lower()
+        if color_norm not in ("green", "yellow", "red"):
+            return
+
+        station_name = station.strip()
+        if not station_name:
+            return
+
+        widget = self.track if line_short == "Green" else self.red_track
+        prev = widget._station_light_color(station_name, pos_norm)
+        if prev == color_norm:
+            return
+
+        widget.station_light_overrides[(station_name, pos_norm)] = color_norm
+        widget.update()
+
+        pretty_pos = {"before": "Before", "after": "After"}[pos_norm]
+
+        self.info_msg.setText(
+            f"{line_short} Line — {station_name} ({pretty_pos}) light → {color_norm.upper()}")
+        self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
+
     def _on_manual_load(self):
         """Validate manual schedule (From/To/Arrival Time). Train departs immediately; arrival time is scheduled (movement is handled elsewhere)."""
         time_str = self.time_entry.text().strip()
@@ -1368,8 +1514,9 @@ class MainWindow(QMainWindow):
             self.info_msg.setText("Error: Invalid time (hours 00–23, minutes 00–59).")
             self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
             return
-        origin = self.origin_combo.currentText()
-        dest = self.dest_combo.currentText()
+        # Normalize dropdown text to avoid issues with accidental whitespace/casing differences.
+        origin = self.origin_combo.currentText().replace("\u00a0", " ").strip()
+        dest = self.dest_combo.currentText().replace("\u00a0", " ").strip()
         if origin == dest:
             self.info_msg.setText("Error: Origin and destination cannot be the same.")
             self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
@@ -1384,7 +1531,19 @@ class MainWindow(QMainWindow):
         # Do not generate a per-dispatch train ID. Keep a single manual-dispatch entry.
         train_id = "Manual"
         line = "Green Line"
-        section, block = "A", 1
+
+        # Start the train at the selected origin station.
+        origin_key = next(
+            (k for k in GREEN_STATION_TO_START.keys() if k.lower() == origin.lower()),
+            None,
+        )
+        if origin_key is None:
+            self.info_msg.setText(
+                f"Error: Unsupported origin '{origin}' for manual Green Line dispatch.")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        section, block = GREEN_STATION_TO_START[origin_key]
+
         # Store route metadata for other modules (movement handled elsewhere)
         self._external_trains[train_id] = {
             "line": line,
@@ -1395,7 +1554,11 @@ class MainWindow(QMainWindow):
             "arrival": time_str,
         }
         self._poll_active_trains()
-        self.info_msg.setText(f"Train has departed from {origin} to {dest}. Scheduled arrival at {time_str}.")
+        self.info_msg.setText(
+            f"Train departs from {origin} to {dest}. "
+            f"Starts at Sec {section}, Blk {block}. "
+            f"Scheduled arrival at {time_str}."
+        )
         self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
     def on_block_clicked(self, label, line: str):
