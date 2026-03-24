@@ -10,7 +10,7 @@ from train_frontend_test import TrainModelTestUI
 
 
 def main():
-    app = QApplication(sys.argv) #to allow app to run
+    app = QApplication(sys.argv)  # to allow app to run
 
     # tie the model in with the backend that was made
     model = TrainModel()
@@ -21,13 +21,12 @@ def main():
     mainUI.show()
     testUI.show()
 
-    # artifical timer was made to simulate time so speed, accel, etc. could change as time passes
+    # artificial timer was made to simulate time so speed, accel, etc. could change as time passes
     simTimer = QTimer()
     simTimer.timeout.connect(model.tick)
     simTimer.start(100)  # 100 ms matches samplePeriodSec in the backend
 
-    sys.exit(app.exec_()) 
+    sys.exit(app.exec_())
 
 
-if __name__ == "__main__":
-    main()
+main()

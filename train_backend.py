@@ -19,6 +19,8 @@ def kmToMiles(km):
     return km * 0.621371
 def cToF(c):        
     return c * 9.0 / 5.0 + 32.0
+def fToC(f):
+    return (f - 32.0) * 5.0 / 9.0
 def ms2ToFps2(a):   
     return a * 3.28084
 
@@ -80,7 +82,7 @@ class TrainModel:
         emergencyBrakeActive = (self.isEmergencyBrakeOn or self.isPassengerEmergencyBrakeOn)
         serviceBrakeActive = self.isServiceBrakeOn and not emergencyBrakeActive
 
-        # traction force: F = P/v 
+        # traction force: f = p/v 
         if emergencyBrakeActive:
             tractionForceN = 0.0 #train will come to stop if there is a fualt
         else:
@@ -105,13 +107,9 @@ class TrainModel:
         # apply track model acceleration and deceleration limits
         if self.trackAccelerationLimitKmh2 > 0.0:
             accelCapMps2 = self.trackAccelerationLimitKmh2 / 12960.0
-        else:
-            accelCapMps2 = 1.5
 
         if self.trackDecelerationLimitKmh2 > 0.0:
             decelCapMps2 = self.trackDecelerationLimitKmh2 / 12960.0
-        else:
-            decelCapMps2 = 1.5
         
         #will never exceed the cap of accel
         if rawAccelMps2 > accelCapMps2:
@@ -128,12 +126,11 @@ class TrainModel:
 
         self.currentAccelMps2 = newAccelMps2
 
-        # trapezoidal velocity integration: v_n = v_{n-1} + (dt/2) * (a_n + a_{n-1})
+        # v_n = v_{n-1} + (dt/2) * (a_n + a_{n-1})
         newVelocityMps = self._prevVelocityMps + (dt / 2.0) * (newAccelMps2 + self._prevAccelMps2)
         newVelocityMps = max(0.0, newVelocityMps)
-        newVelocityMps = min(newVelocityMps, self.commandedSpeedKmh / 3.6)
 
-        # trapezoidal position integration
+        # position integration
         distanceDeltaM          = (dt / 2.0) * (newVelocityMps + self._prevVelocityMps)
         self.distanceTraveledKm += distanceDeltaM / 1000.0
         self.commandedAuthorityKm = max(0.0, self.commandedAuthorityKm - distanceDeltaM / 1000.0)
@@ -149,8 +146,6 @@ class TrainModel:
     # outputs to train controller
     def getCurrentSpeedKmh(self):         
         return self.currentSpeedKmh
-    def getCurrentVelocityKmh(self):      
-        return self.currentSpeedKmh    # to track model
     def getCommandedSpeedKmh(self):       
         return self.commandedSpeedKmh
     def getCommandedAuthorityKm(self):    
@@ -188,9 +183,100 @@ class TrainModel:
         return kmToMiles(self.commandedAuthorityKm)
     def displayCabinTemperatureF(self):        
         return cToF(self.cabinTemperatureC)
-    def displayCurrentAccelMps2(self):        
-        return self.currentAccelMps2
     def displayCurrentAccelFps2(self):        
         return ms2ToFps2(self.currentAccelMps2)
     def displayRequestedTractionPowerKw(self): 
         return self.requestedTractionPowerW / 1000.0
+
+
+#current integration for train model and controller to check functionality.
+# class TrainSystem:
+#     def __init__(self, model=None, controller=None):
+#         self.model = model or TrainModel()
+#
+#         if controller is None:
+#             from train_controller_backend import TrainController as _TrainController
+#             controller = _TrainController(train_id=1)
+#
+#         self.controller = controller
+#         self._authority_pushed_to_controller_m = None
+#         self._prev_faults = {"pwr": False, "brk": False, "sig": False}
+#
+#     def _sync_faults(self):
+#         m = self.model
+#         c = self.controller
+#
+#         pwr = bool(m.hasPowerFault)
+#         brk = bool(m.hasBrakeFault)
+#         sig = bool(m.hasEngineFault)
+#
+#         c.fault_power = pwr
+#         c.fault_brake = brk
+#         c.fault_signal = sig
+#
+#         if (pwr and not self._prev_faults["pwr"]) or (brk and not self._prev_faults["brk"]) or (sig and not self._prev_faults["sig"]):
+#             try:
+#                 c.emergency_brake = True
+#             except Exception:
+#                 pass
+#         self._prev_faults = {"pwr": pwr, "brk": brk, "sig": sig}
+#
+#     def _sync_authority_controller_to_model_if_user_changed(self):
+#         self._push_model_authority_to_controller()
+#
+#     def _push_model_authority_to_controller(self):
+#         c = self.controller
+#         m = self.model
+#         authority_m = max(0.0, m.commandedAuthorityKm * 1000.0)
+#         c.authority = authority_m
+#         self._authority_pushed_to_controller_m = authority_m
+#
+#     def tick(self, dt=samplePeriodSec):
+#         m = self.model
+#         c = self.controller
+#
+#         self._sync_authority_controller_to_model_if_user_changed()
+#
+#         c.current_speed = kmhToMph(m.currentSpeedKmh)
+#         c.commanded_speed = kmhToMph(m.commandedSpeedKmh)
+#         c.speed_limit = kmhToMph(m.speedLimitKmh)
+#         c.distance_travelled_km = m.distanceTraveledKm
+#
+#         self._sync_faults()
+#
+#         passenger_ebrake = bool(m.isPassengerEmergencyBrakeOn)
+#         if passenger_ebrake:
+#             c.emergency_brake = True
+#
+#         c.monitor()
+#         c.calc_power(dt)
+#
+#         combined_ebrake = bool(getattr(c, "emergency_brake", False))
+#         c.emergency_brake = combined_ebrake
+#         m.isEmergencyBrakeOn = combined_ebrake
+#
+#         manual_svc = bool(getattr(c, "service_brake", False))
+#         auto_svc = bool(getattr(c, "auto_service_brake", False))
+#         m.isServiceBrakeOn = (manual_svc or auto_svc) and not m.isEmergencyBrakeOn
+#
+#         m.areExternalLightsOn = bool(getattr(c, "headlights", False))
+#         m.areInternalLightsOn = bool(getattr(c, "interior_lights", 0))
+#
+#         doors_state = int(getattr(c, "doors_state", 0))
+#         m.isRightDoorOpen = doors_state in (1, 3)
+#         m.isLeftDoorOpen = doors_state in (2, 3)
+#
+#         m.cabinTemperatureC = fToC(float(getattr(c, "cabin_temp", cToF(m.cabinTemperatureC))))
+#
+#         m.onboardPassengers = int(getattr(c, "passengers", m.onboardPassengers))
+#         m.boardingPassengerCount = 0
+#
+#         beacon_str = (m.beaconData or "").strip()
+#         c.next_station = beacon_str
+#         m.approachingStation = beacon_str
+#
+#         m.requestedTractionPowerW = float(getattr(c, "power_output", 0.0))
+#
+#         m.tick()
+#
+#         self._push_model_authority_to_controller()

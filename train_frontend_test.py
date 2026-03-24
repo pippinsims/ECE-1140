@@ -49,7 +49,7 @@ class TrainModelTestUI(QMainWindow):
         self.leftDoorOn       = False
 
         self.setWindowTitle("Train Model Test")
-        self.setFixedSize(1920, 990)
+        self.setBaseSize(1080, 800)
         self.setStyleSheet(f"background-color: {BG_PAGE};")
 
         central = QWidget()
@@ -60,7 +60,7 @@ class TrainModelTestUI(QMainWindow):
 
         # header
         headerFrame = QFrame()
-        headerFrame.setFixedHeight(87)
+        headerFrame.setFixedHeight(60)
         headerFrame.setStyleSheet(f"""
             QFrame {{
                 background-color: {BG_HEADER};
@@ -68,10 +68,10 @@ class TrainModelTestUI(QMainWindow):
             }}
         """)
         headerLayout = QHBoxLayout(headerFrame)
-        headerLayout.setContentsMargins(42, 0, 42, 0)
+        headerLayout.setContentsMargins(24, 0, 24, 0)
 
         titleLabel = QLabel("Train Model Test")
-        titleLabel.setFont(QFont("Segoe UI", 22, QFont.Bold))
+        titleLabel.setFont(QFont("Segoe UI", 18, QFont.Bold))
         titleLabel.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent;")
         headerLayout.addWidget(titleLabel)
         headerLayout.addStretch()
@@ -82,8 +82,8 @@ class TrainModelTestUI(QMainWindow):
         bodyWidget = QWidget()
         bodyWidget.setStyleSheet(f"background-color: {BG_PAGE};")
         bodyLayout = QHBoxLayout(bodyWidget)
-        bodyLayout.setContentsMargins(36, 30, 36, 30)
-        bodyLayout.setSpacing(24)
+        bodyLayout.setContentsMargins(18, 14, 18, 14)
+        bodyLayout.setSpacing(14)
         rootLayout.addWidget(bodyWidget, stretch=1)
 
         # ── inputs card ──────────────────────────────────────────────────────
@@ -92,7 +92,7 @@ class TrainModelTestUI(QMainWindow):
             QWidget {{
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER_CARD};
-                border-radius: 18px;
+                border-radius: 12px;
             }}
         """)
         cardShadow(inputsCard)
@@ -103,8 +103,8 @@ class TrainModelTestUI(QMainWindow):
         cardTitleWidget = QWidget()
         cardTitleWidget.setStyleSheet("background: transparent; border: none;")
         cardTitleLayout = QVBoxLayout(cardTitleWidget)
-        cardTitleLayout.setContentsMargins(30, 24, 30, 0)
-        cardTitleLayout.setSpacing(12)
+        cardTitleLayout.setContentsMargins(20, 16, 20, 0)
+        cardTitleLayout.setSpacing(8)
         cardTitleLayout.addWidget(self._cardTitle("Inputs"))
         inputsOuterLayout.addWidget(cardTitleWidget)
 
@@ -120,8 +120,8 @@ class TrainModelTestUI(QMainWindow):
         container.setStyleSheet("background: transparent; border: none;")
         grid = QGridLayout(container)
         grid.setSpacing(0)
-        grid.setVerticalSpacing(3)
-        grid.setContentsMargins(30, 18, 30, 30)
+        grid.setVerticalSpacing(4)
+        grid.setContentsMargins(18, 12, 18, 18)
         grid.setColumnStretch(0, 3)
         grid.setColumnStretch(1, 2)
         grid.setColumnStretch(2, 1)
@@ -202,7 +202,7 @@ class TrainModelTestUI(QMainWindow):
             QWidget {{
                 background-color: {BG_CARD};
                 border: 1px solid {BORDER_CARD};
-                border-radius: 18px;
+                border-radius: 12px;
             }}
         """)
         cardShadow(outputsCard)
@@ -213,8 +213,8 @@ class TrainModelTestUI(QMainWindow):
         outputsTitleWidget = QWidget()
         outputsTitleWidget.setStyleSheet("background: transparent; border: none;")
         outputsTitleLayout = QVBoxLayout(outputsTitleWidget)
-        outputsTitleLayout.setContentsMargins(30, 24, 30, 0)
-        outputsTitleLayout.setSpacing(12)
+        outputsTitleLayout.setContentsMargins(20, 16, 20, 0)
+        outputsTitleLayout.setSpacing(8)
         outputsTitleLayout.addWidget(self._cardTitle("Outputs"))
         outputsOuterLayout.addWidget(outputsTitleWidget)
 
@@ -230,8 +230,8 @@ class TrainModelTestUI(QMainWindow):
         outputsContainer.setStyleSheet("background: transparent; border: none;")
         outputsGrid = QGridLayout(outputsContainer)
         outputsGrid.setSpacing(0)
-        outputsGrid.setVerticalSpacing(3)
-        outputsGrid.setContentsMargins(30, 18, 30, 30)
+        outputsGrid.setVerticalSpacing(4)
+        outputsGrid.setContentsMargins(18, 12, 18, 18)
         outputsGrid.setColumnStretch(0, 3)
         outputsGrid.setColumnStretch(1, 2)
         outputsGrid.setColumnStretch(2, 1)
@@ -268,10 +268,10 @@ class TrainModelTestUI(QMainWindow):
 
     def _cardTitle(self, text):
         lbl = QLabel(text.upper())
-        lbl.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        lbl.setFont(QFont("Segoe UI", 10, QFont.Bold))
         lbl.setStyleSheet(f"""
             color: {TEXT_SECONDARY};
-            letter-spacing: 2px;
+            letter-spacing: 1px;
             background: transparent;
             border: none;
             padding-bottom: 3px;
@@ -281,8 +281,8 @@ class TrainModelTestUI(QMainWindow):
 
     def _addSectionHeader(self, grid, row, text):
         lbl = QLabel(text)
-        lbl.setFont(QFont("Segoe UI", 13, QFont.Bold))
-        lbl.setFixedHeight(48)
+        lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        lbl.setFixedHeight(32)
         lbl.setStyleSheet(f"""
             color: {TEXT_SECONDARY};
             background: transparent;
@@ -295,16 +295,16 @@ class TrainModelTestUI(QMainWindow):
 
     def _addNumericRow(self, grid, row, labelText, unitText, minVal, maxVal, step, decimals):
         lbl = QLabel(labelText)
-        lbl.setFont(QFont("Segoe UI", 15))
-        lbl.setFixedHeight(51)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setFixedHeight(32)
         lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
 
         spin = QDoubleSpinBox()
         spin.setRange(minVal, maxVal)
         spin.setSingleStep(step)
         spin.setDecimals(decimals)
-        spin.setFixedHeight(45)
-        spin.setFont(QFont("Segoe UI", 15))
+        spin.setFixedHeight(30)
+        spin.setFont(QFont("Segoe UI", 11))
         spin.setAlignment(Qt.AlignRight)
         spin.setStyleSheet(f"""
             QDoubleSpinBox {{
@@ -320,8 +320,8 @@ class TrainModelTestUI(QMainWindow):
         """)
 
         unitLbl = QLabel(unitText)
-        unitLbl.setFont(QFont("Segoe UI", 13))
-        unitLbl.setFixedHeight(51)
+        unitLbl.setFont(QFont("Segoe UI", 10))
+        unitLbl.setFixedHeight(32)
         unitLbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         unitLbl.setStyleSheet(f"color: #9CA3AF; background: transparent; border: none; padding-left: 6px;")
 
@@ -332,14 +332,14 @@ class TrainModelTestUI(QMainWindow):
 
     def _addIntRow(self, grid, row, labelText, minVal, maxVal):
         lbl = QLabel(labelText)
-        lbl.setFont(QFont("Segoe UI", 15))
-        lbl.setFixedHeight(51)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setFixedHeight(32)
         lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
 
         spin = QSpinBox()
         spin.setRange(minVal, maxVal)
-        spin.setFixedHeight(45)
-        spin.setFont(QFont("Segoe UI", 15))
+        spin.setFixedHeight(30)
+        spin.setFont(QFont("Segoe UI", 11))
         spin.setAlignment(Qt.AlignRight)
         spin.setStyleSheet(f"""
             QSpinBox {{
@@ -355,8 +355,8 @@ class TrainModelTestUI(QMainWindow):
         """)
 
         unitLbl = QLabel("count")
-        unitLbl.setFont(QFont("Segoe UI", 13))
-        unitLbl.setFixedHeight(51)
+        unitLbl.setFont(QFont("Segoe UI", 10))
+        unitLbl.setFixedHeight(32)
         unitLbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         unitLbl.setStyleSheet(f"color: #9CA3AF; background: transparent; border: none; padding-left: 6px;")
 
@@ -366,15 +366,15 @@ class TrainModelTestUI(QMainWindow):
         return spin
 
     def _addStringRow(self, grid, row, labelText, unitText):
-        # label + free-text QLineEdit for string inputs (e.g. beacon data)
+        # label + free-text qlineedit for string inputs (e.g. beacon data)
         lbl = QLabel(labelText)
-        lbl.setFont(QFont("Segoe UI", 15))
-        lbl.setFixedHeight(51)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setFixedHeight(32)
         lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
 
         edit = QLineEdit()
-        edit.setFixedHeight(45)
-        edit.setFont(QFont("Segoe UI", 15))
+        edit.setFixedHeight(30)
+        edit.setFont(QFont("Segoe UI", 11))
         edit.setAlignment(Qt.AlignRight)
         edit.setPlaceholderText("—")
         edit.setStyleSheet(f"""
@@ -389,8 +389,8 @@ class TrainModelTestUI(QMainWindow):
         """)
 
         unitLbl = QLabel(unitText)
-        unitLbl.setFont(QFont("Segoe UI", 13))
-        unitLbl.setFixedHeight(51)
+        unitLbl.setFont(QFont("Segoe UI", 10))
+        unitLbl.setFixedHeight(32)
         unitLbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         unitLbl.setStyleSheet(f"color: #9CA3AF; background: transparent; border: none; padding-left: 6px;")
 
@@ -401,20 +401,20 @@ class TrainModelTestUI(QMainWindow):
 
     def _addToggleRow(self, grid, row, labelText, callback):
         lbl = QLabel(labelText)
-        lbl.setFont(QFont("Segoe UI", 15))
-        lbl.setFixedHeight(51)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setFixedHeight(32)
         lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
 
         btn = QPushButton("OFF")
-        btn.setFont(QFont("Segoe UI", 13, QFont.Bold))
-        btn.setFixedHeight(42)
+        btn.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        btn.setFixedHeight(28)
         btn.setCheckable(True)
         btn.setStyleSheet(self._toggleStyle(False))
         btn.clicked.connect(callback)
 
         unitLbl = QLabel("bool")
-        unitLbl.setFont(QFont("Segoe UI", 13))
-        unitLbl.setFixedHeight(51)
+        unitLbl.setFont(QFont("Segoe UI", 10))
+        unitLbl.setFixedHeight(32)
         unitLbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         unitLbl.setStyleSheet(f"color: #9CA3AF; background: transparent; border: none; padding-left: 6px;")
 
@@ -425,13 +425,13 @@ class TrainModelTestUI(QMainWindow):
 
     def _addOutputRow(self, grid, row, labelText, unitText):
         lbl = QLabel(labelText)
-        lbl.setFont(QFont("Segoe UI", 15))
-        lbl.setFixedHeight(51)
+        lbl.setFont(QFont("Segoe UI", 11))
+        lbl.setFixedHeight(32)
         lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
 
         val = QLabel("—")
-        val.setFont(QFont("Segoe UI", 15))
-        val.setFixedHeight(45)
+        val.setFont(QFont("Segoe UI", 11))
+        val.setFixedHeight(30)
         val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         val.setStyleSheet(f"""
             color: #9CA3AF;
@@ -442,8 +442,8 @@ class TrainModelTestUI(QMainWindow):
         """)
 
         unitLbl = QLabel(unitText)
-        unitLbl.setFont(QFont("Segoe UI", 13))
-        unitLbl.setFixedHeight(51)
+        unitLbl.setFont(QFont("Segoe UI", 10))
+        unitLbl.setFixedHeight(32)
         unitLbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         unitLbl.setStyleSheet(f"color: #9CA3AF; background: transparent; border: none; padding-left: 6px;")
 
@@ -555,12 +555,3 @@ class TrainModelTestUI(QMainWindow):
         self.pushToModel()
 
 
-def main():
-    app = QApplication(sys.argv)
-    w = TrainModelTestUI()
-    w.show()
-    sys.exit(app.exec_())
-
-
-if __name__ == "__main__":
-    main()
