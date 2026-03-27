@@ -210,6 +210,7 @@ class Train:
         if ui.selectedRect and ui.selectedRect.block == self.block: ui.display_block(self.block)
 
 #TODO test ui should receive the actual output type of the tkc not strings/ints.
+#make TrackMap.build() work for the Green and Red lines
 #CORRECT THE UNITS
 
 class TrackRectItem(QGraphicsRectItem):
