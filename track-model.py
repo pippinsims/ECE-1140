@@ -2,75 +2,172 @@ import sys
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
+import os
 
 BOXSIZE = 70
-TICKSPEED = 0.5
-WHITPEN = QPen(QColor("WHITE"),2)
-PURPPEN = QPen(QColor("purple"),2)
-GRENPEN = QPen(QColor("green"),2)
-YELWPEN = QPen(QColor("yellow"),2)
-REDDPEN = QPen(QColor("red"),2)
+TICKSPEED = 0.1
+WHITPEN = QPen(QColor("white"),2)
+PURPPEN = QPen(QColor("red"),2)
 BLCKPEN = QPen(QColor("black"),2)
 NONEPEN = QPen(Qt.PenStyle.NoPen) #QPen(QColor("black"),0)
 
 def div(x, y):
     return int(x/y)
 
-def toint(b: bool) -> int:
+def to_int(b: bool) -> int:
     return 1 if b else 0
+
+def first_int_in(s: str) -> int:
+    import re
+    return re.match(r'\d+', s).group(0)
+
+def remall(x, l: list) -> list:
+    import copy; c = copy.deepcopy(l)
+    for i in c: 
+        if i == x: c.remove(x)
+    return c
+
+def sign(b: bool)->int: return 1 if b else -1
+
+def pixmap(name: str, color: str) -> QPixmap:
+    p = QPixmap(f"{os.path.dirname(__file__)}\\{name}.png").scaled(32, 32)
+    t = QPixmap(p.size())
+    t.fill(Qt.GlobalColor.transparent)
+
+    q = QPainter(t)
+    q.drawPixmap(0, 0, p)
+    q.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+    q.fillRect(t.rect(), QColor(color))
+    q.end()
+
+    return t
 
 class Block:
     def __init__(self, num, type:str, dir, leng, grade, spdlim):
         self.num = int(num)
         self.type = type
-        self.dir = dir
+        self.directionality = dir
         self.grade = int(grade)
         self.is_occupied = False
-        self.leng = int(leng)
-        self.spdlim = int(spdlim)
+        self.mylength = int(leng)
+        self.speed_limit = int(spdlim)
 
-        self.spd = 0
-        self.auth = 0
+        self.speed = 0
+        self.authority = 0
 
         self.brknrail = False
         self.dsrptrck = False
         self.nopower = False
 
-        self.isdiagup = False
+        self.isdownward = False
         self.next = []
         self.prev = []
         
         t = self.type
-        if t.find("w")!=-1:
-            while True: 
-                i = t.find(str(self.num))
-                if i == -1: break
-                if t[i+1] == "-":
-                    import re
-                    s = re.match(r'\d+', t[i+2:]).group(0)
-                    self.next.append(s)
+
+        #if 3 connections, if missing a neighbor, that is the unknown connection (i think 3way is always missing a neighbor)
+        #if 2 connections, the unknown connection is the neighbor on that side (prev <, next >)
+        if self.is_switch():
+            self.switch_state = 0
+            import re
+            a = [int(i) for i in re.findall(r'\d+',t)] #array of all digit sequences in t
+            n = self.num
+
+            if len(a) == 2:
+                if a[0] == n:
+                    self.next = [a[1]]
+                    self.prev = [n-1]
                 else:
-                    import re
-                    s = re.match(r'\d+', t[i-2:]).group(0)
-                    self.prev.append(s)
-                t = t[i+1:]
-            self.swstat = 0
-            if t.find("l")!=-1:
-                self.listat = "green"
-            if len(self.prev) == 0 and self.num != 1: self.prev = [self.num-1]
-            if len(self.next) == 0 and self.num != 15: self.next = [self.num+1] #TODO that 15
+                    self.prev = [a[0]]
+                    self.next = [n+1]
+            if len(a) == 4:
+                #  a[0]
+                #   \ 
+                #    [n]---x
+                #   /
+                #  a[2]
+                # one known is a neighbor. x = the other neighbor
+                other_neighbor = n+1 if n-1 in a else n-1
+
+                if a[1] == n and a[3] == n:
+                    self.prev = remall(n,a)
+                    self.next = [other_neighbor]
+                elif a[0] == n and a[3] == n:
+                    self.next.append(a[1])
+                    self.prev.append(a[2])
+                    if abs(a[1] - n) == 1: 
+                        self.prev.append(other_neighbor)
+                    else:
+                        self.next.append(other_neighbor)
+                elif a[1] == n and a[2] == n:
+                    self.next.append(a[3])
+                    self.prev.append(a[0])
+                    if abs(a[3] - n) == 1: 
+                        self.prev.append(other_neighbor)
+                    else:
+                        self.next.append(other_neighbor)
+                elif a[0] == n and a[2] == n:
+                    self.next = remall(n,a)
+                    self.prev = [other_neighbor]
+                
+                if self.num in [15,10]: self.next = []
+                if self.num == 1: self.prev = []
+                
+                #
+                #[5,6,5,11]
+                #   |
+                #  \ /
+                #   V
+                #p=[4] n=[6,11]
+                #
+                #[from, to ,from, to ]
+                #  |    |    |    |
+                #[self,othr,self,othr]
+                #[self,othr,othr,self]
+                #[othr,self,self,othr]
+                #[othr,self,othr,self]
         else:
-            if self.num != 1:
-                self.prev = [self.num-1]
-            if self.num != 10:
-                self.next = [self.num+1]
+            if self.num != 1: self.prev.append(self.num-1)
+            if self.num not in [10, 15]: self.next.append(self.num+1)
+        
+        if self.has_light(): self.light_state = "green"
+            
+        if self.is_crossing(): self.crossing_state = False
 
-        if t[0] == "c": self.crstat = False
-
-        if t[0] == "t": 
-            import random
-            self.psngrs = random.randint(0,100)
-
+        if self.is_station(): 
+            self.tickets = 0
+            self.num_boarding = 0
+            self.num_standing = 0
+            self.gentickets()
+    
+    def is_switch(self)->bool: return self.type[0] == "w"
+    def is_main_switch(self)->bool: return self.is_switch() and "l" not in self.type
+    def is_branch_switch(self)->bool: return self.is_switch() and "l" in self.type
+    def is_beacon(self)->bool: return self.type[0] == "b"
+    def has_light(self)->bool: return self.is_beacon() or self.is_branch_switch()
+    def is_station(self)->bool: return self.type[0] == "t"
+    def is_crossing(self)->bool: return self.type[0] == "c"
+    def cur_switch_option(self):
+        return [self.first_switch_option(),self.second_switch_option()][self.switch_state]
+    def first_switch_option(self) -> tuple[int,int]: #from, to
+        txt = self.type[1:self.type.find(",")]
+        if self.has_light(): txt = self.type[1:self.type.find(";")]
+        return (txt[:txt.find("-")],txt[txt.find("-")+1:])
+    def second_switch_option(self):
+        txt = self.type[self.type.find(",")+1:]
+        return (txt[:txt.find("-")],txt[txt.find("-")+1:])
+    
+    def gentickets(self):
+        import random
+        self.num_boarding = random.randint(0,100)
+        self.tickets = random.randint(self.num_boarding,100)
+        self.num_standing += self.tickets
+        print(f"there were {self.tickets} more sales!")
+        print(f"{self.num_standing} are standing")
+    
+    def beacondata(self)->str:
+        return self.type[2:] if self.is_beacon() else None
+    
     def setcard(self, c): self.card = c
     def setx(self, x): self.x = x
     def sety(self, y): self.y = y
@@ -79,51 +176,76 @@ class Block:
     def deoccupy(self):
         self.is_occupied = False
 
-    def cur_switch_option(self):
-        return [self.first_switch_option(),self.second_switch_option()][self.swstat]
-    def first_switch_option(self) -> tuple[int,int]: #from, to
-        txt = self.type[1:self.type.find(",")]
-        if "l" in self.type: txt = self.type[1:self.type.find(";")]
-        return (txt[:txt.find("-")],txt[txt.find("-")+1:])
-    def second_switch_option(self):
-        txt = self.type[self.type.find(",")+1:]
-        return (txt[:txt.find("-")],txt[txt.find("-")+1:])
-
 class Train:
     def __init__(self, num:int, tkm):
         self.num = num
-        self.relpos = 0
+        self.pos_on_b = 0
         self.block:Block = tkm.blocks[0]
-        self.spd = 0
+        self.speed = 0
+        self.num_riding = 0
+        self.beacon = ''
 
-#"overhead power" not "block power", and on this fault it doesn't report occupied, this is just power to the train
-# num passengers boarded/ passengers standing/num tickets all on main ui
-# test ui should receive the actual output type of the tkc not strings/ints.
-#beacon data is static, you can load it in with the file
+    def update(self):
+        if self.block.nopower: print("NO POWER TO TRAIN!")
+        if self.block.is_station(): self.board()
+        if self.block.is_beacon():
+            print(f"block {self.block.num} beacondata:'{self.block.beacondata()}'")
+            self.beacon = self.block.beacondata()
+    
+    def board(self):
+        import random
+        r = random.randint(0, self.num_riding)
+        self.num_riding -= r
+        self.block.num_standing += r
+        print(f"{r} got off of the train")
+        print(f"{self.block.num_standing} are standing")
+
+        self.block.num_standing -= self.block.num_boarding
+        self.num_riding += self.block.num_boarding
+        print(f"{self.block.num_boarding} got on the train")
+        print(f"{self.block.num_standing} are standing")
+
+        self.block.gentickets()
+
+        if ui.selectedRect and ui.selectedRect.block == self.block: ui.display_block(self.block)
+
+#TODO test ui should receive the actual output type of the tkc not strings/ints.
+#CORRECT THE UNITS
 
 class TrackRectItem(QGraphicsRectItem):
-    def __init__(self, scene, b: Block):
+    def __init__(self, scene: QGraphicsScene, b: Block):
         self.block = b
         self.myx = b.x
         self.myy = b.y
         self.is_selected = False
-        self.arrow = []
+        self.upArrow = []
         super().__init__(QRectF(b.x*BOXSIZE,b.y*BOXSIZE,BOXSIZE,BOXSIZE))
         
+        self.ic1 = scene.addPixmap(QPixmap())
+        self.ic2 = scene.addPixmap(QPixmap())
+        self.ic3 = scene.addPixmap(QPixmap())
+
         txt = str(b.num)
-        if b.type[0] == "c": txt+="C"
-        if "l" in b.type: txt += "L"
-        elif b.type[0] == "w": 
-            txt += "SW"
-            self.otherArrow = []
-        if b.type[0] == "b": txt += "B"
-        if b.type[0] == "t": txt += "ST"
+        if b.is_crossing(): self.ic2 = scene.addPixmap(pixmap('railroad-crossing','white'))
+        if b.has_light(): self.ic2 = scene.addPixmap(pixmap('traffic-light','white'))
+        elif b.is_switch(): self.downArrow = []
+        if b.is_beacon(): self.ic3 = scene.addPixmap(pixmap('beacon','white'))
+        if b.is_station(): self.ic2 = scene.addPixmap(pixmap('building','white'))
+
+        
+        # self.ic = scene.addPixmap(pixmap("train", "purple"))
+        self.ic1.setPos((b.x)*BOXSIZE,b.y*BOXSIZE)
+        self.ic2.setPos((b.x + 0.5)*BOXSIZE,b.y*BOXSIZE)
+        self.ic3.setPos((b.x + 0.5)*BOXSIZE,(b.y+0.5)*BOXSIZE)
         
         self.text = text = QGraphicsSimpleTextItem(txt, self)
         text.setFont(QFont("Segoe UI", 12))
-        text.setPos((b.x+0.5)*BOXSIZE-div(text.boundingRect().width(),2), b.y*BOXSIZE)
+        if b.is_main_switch():
+            text.setPos((b.x+0.5)*BOXSIZE-div(text.boundingRect().width(),2), b.y*BOXSIZE)
+        else:
+            text.setPos((b.x+0.25)*BOXSIZE-div(text.boundingRect().width(),2), (b.y+0.5)*BOXSIZE)
         text.setPen(WHITPEN)
-        
+
         if b.card: self.drawTrack(scene)
     
     def mousePressEvent(self, event):
@@ -133,9 +255,9 @@ class TrackRectItem(QGraphicsRectItem):
         ui.selectedRect = self
         self.is_selected = True
         
-        self.quietlySet(ui.chckbx,b.brknrail)
-        self.quietlySet(ui.chckbx1,b.dsrptrck)
-        self.quietlySet(ui.chckbx2,b.nopower)
+        self.quietlySet(ui.chkbrk,b.brknrail)
+        self.quietlySet(ui.chkcirc,b.dsrptrck)
+        self.quietlySet(ui.chkpower,b.nopower)
 
     def quietlySet(self, c:QCheckBox, state):
         c.blockSignals(True)
@@ -153,15 +275,37 @@ class TrackRectItem(QGraphicsRectItem):
             self.setPen(NONEPEN)
             self.setZValue(0)
 
-    def setTrackPen(self, p:QPen, other = False):
-        for x in self.otherArrow if other else self.arrow:
+    def update(self):
+        self.train_icon(None)
+        b = self.block
+
+        if b.is_main_switch():
+            self.setTrack(WHITPEN, b.switch_state == 1)
+            self.setTrack(BLCKPEN, b.switch_state != 1)
+        else:
+            self.setTrack(WHITPEN)
+                            
+        if b.has_light(): self.light_icon(b.light_state)
+        if b.is_occupied: self.train_icon("white")
+        elif b.is_crossing() and b.crossing_state: self.setTrack(BLCKPEN)
+
+    def train_icon   (self, color): self.ic1.setPixmap(pixmap('train',color) if color else QPixmap())
+    def crossing_icon(self, color): self.ic2.setPixmap(pixmap('railroad-crossing',color) if color else QPixmap())
+    def station_icon (self, color): self.ic2.setPixmap(pixmap('building',color) if color else QPixmap())
+    def light_icon   (self, color): self.ic2.setPixmap(pixmap('traffic-light',color) if color else QPixmap())
+    def beacon_icon  (self, color): self.ic3.setPixmap(pixmap('beacon',color) if color else QPixmap())
+
+    def setTrack(self, p:QPen, downward = False):
+        for x in self.downArrow if downward else self.upArrow:
             if type(x) is QGraphicsPolygonItem:
                 x.setBrush(p.color())
             x.setPen(p)
-        self.text.setPen(p)
+        if self.block.is_crossing():
+            self.crossing_icon('black' if p == BLCKPEN else 'white')
+            self.text.setPen(p)
         
     def drawTrack(self, scene: QGraphicsScene):
-        def addHead(s,e,other = False):
+        def addHead(s,e,downward = False):
             (sx,sy),(ex,ey) = s,e
             import math
             size = 5
@@ -175,8 +319,8 @@ class TrackRectItem(QGraphicsRectItem):
             head.setBrush(QBrush(QColor("blue")))
             head.setPen(WHITPEN)
 
-            if other: self.otherArrow.append(head)
-            else: self.arrow.append(head)
+            if downward: self.downArrow.append(head)
+            else: self.upArrow.append(head)
             scene.addItem(head)
             
         sx,ex,sy,ey = [0.5]*4
@@ -186,37 +330,37 @@ class TrackRectItem(QGraphicsRectItem):
         if self.block.card == "up"   : sy,ey = 1,0
         if self.block.card == "down" : sy,ey = 0,1
 
-        def addArrow(stup, etup, other = False):
+        def addArrow(stup, etup, downward = False):
             x, y = self.myx*BOXSIZE, self.myy*BOXSIZE
             sx,ex,sy,ey = [d + int(BOXSIZE*i) for d,i in zip([x,x,y,y],[stup[0],etup[0],stup[1],etup[1]])]
             
             line = QGraphicsLineItem(sx,sy,ex,ey)
             line.setPen(WHITPEN)
 
-            if other: self.otherArrow.append(line)
-            else: self.arrow.append(line)
+            if downward: self.downArrow.append(line)
+            else: self.upArrow.append(line)
             scene.addItem(line)
             
-            addHead((sx,sy),(ex,ey), other)
-            if self.block.dir == "bid":
-                addHead((ex,ey),(sx,sy), other)
+            addHead((sx,sy),(ex,ey), downward)
+            if self.block.directionality == "bid":
+                addHead((ex,ey),(sx,sy), downward)
 
-        if self.block.type[0] == "w":
-            if "l" not in self.block.type:
+        if self.block.is_switch():
+            if self.block.is_main_switch():
                 if self.block.card in ["left","right"]:
                     addArrow((sx,sy),(ex, 0))
-                    addArrow((sx,sy),(ex, 1),True)#down one is always 'other'
+                    addArrow((sx,sy),(ex, 1),True)
                     self.text.setX(self.text.x()-10)
                     self.text.setY(self.text.y()+20)
                 else:
                     print("an 'up' switch?")
             else:
-                if self.block.isdiagup:
-                    addArrow((sx,1),(ex, ey))
-                else:
+                if self.block.isdownward:
                     self.text.setY(self.text.y()-10)
                     self.text.setX(self.text.x()-7)
                     addArrow((sx,0),(ex, ey))
+                else:
+                    addArrow((sx,1),(ex, ey))
         else:
             addArrow((sx,sy),(ex,ey))
 
@@ -231,48 +375,46 @@ class TrackMap:
         self.blocks = [Block(*b) for b in csv_table]
         self.trains = [Train(1, self), Train(2, self)]
 
-    def analyze(self):
+    def build(self):
         blocks = self.blocks
         todo = [blocks[0]]
         while len(todo) > 0:
-            #TODO if you try and make infrastructure check good it just breaks everything right here 
-            #and skipping the None that is then in todo after seg 15 causes the track to display wrong
             b = todo.pop(0)
             if b.num == 1:
                 b.setx(int(self.width*0.75))
                 b.sety(int(self.height*0.5))
                 b.setcard("left")
             else:
-                b0 = self.find(b.prev[0])
-                if b0.type[0] == "w" and b.type.find("l") != -1:
+                b0 = self.block(b.prev[0])
+                if b0.is_main_switch():
                     if b0.num == b.num - 1: 
                         b.sety(b0.y-1)
-                        b.isdiagup = True
                     else: 
                         b.sety(b0.y+1)
+                        b.isdownward = True
                 else: b.sety(b0.y)
                 b.setx(b0.x-1) #TODO follow direction of prev
                 b.setcard(b0.card)
-            for n in b.next: 
-                todo.insert(0, self.find(n))
+            for n in b.next:
+                todo.insert(0, self.block(n))
                 print(str(b.num)+"->"+str(n))
             print(str(b.num) +":"+str(b.x) + "," + str(b.y) + "|" + b.card)
     
-    def find(self, n):
+    def block(self, n):
         for b in self.blocks:
             if b.num == int(n):
                 return b
         return None
     
     def view(self) -> QGraphicsScene:
-        self.analyze()
+        self.build()
         
         scene = QGraphicsScene()
         
-        self.items: dict[TrackRectItem,Block] = {}
+        self.items: list[TrackRectItem] = []
         for b in self.blocks:
             it = TrackRectItem(scene, b)
-            self.items[it] = b
+            self.items.append(it)
 
             it.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
             it.setAcceptHoverEvents(True)
@@ -285,94 +427,45 @@ class TrackMap:
         view.setMaximumSize(view.width(),view.height())
         return view
     
-    # def blockOf(self, t: Train) -> Block:
-    #     sum = 0
-    #     for b in self.blocks:
-    #         sum += b.leng
-    #         if t.relpos > sum: continue
-    #         else: return b
-    
     def update(self):
         for t in self.trains:
-            #km/hr * 1hr/3600s * 1000m/1km = 10/36 m/s, and each tick is 0.5s
-            if t.spd != 0: 
-                t.relpos += t.spd * (10/36) * TICKSPEED
-
-            if t.spd > 0:
-                while t.relpos > t.block.leng:
-                    if len(t.block.next) > 0:
-                        t.block.deoccupy()
-                        nex = self.blocks[int(t.block.next[t.block.swstat if t.block.type[0] == "w" and "l" not in t.block.type else 0])-1]
-                        if nex.is_occupied:
-                            t.relpos = t.block.leng
-                            print(f"train {t.num} CRASH (occupied block)")
-                            break
-                        if nex.type[0] == "c" and nex.crstat:
-                            t.relpos = t.block.leng
-                            print(f"train {t.num} CRASH (crossing)")
-                            break
-                        else:
-                            t.relpos -= t.block.leng
-                            t.block = nex
-                    else: 
-                        #at the end
-                        t.relpos = t.block.leng
-                        break
-            else:
-                while t.relpos < 0:
-                    if len(t.block.prev) > 0:
-                        t.block.deoccupy()
-                        pre = self.blocks[int(t.block.prev[0])-1]
-                        if pre.is_occupied:
-                            t.relpos = 0
-                            print(f"train {t.num} CRASH (occupied block)")
-                            break
-                        if pre.type[0] == "w" and "l" not in pre.type:
-                            if int(pre.cur_switch_option()[-1]) == t.block.num:
-                                t.block = pre
-                                t.relpos += t.block.leng
-                            else: 
-                                t.relpos = 0
-                                print(f"train {t.num} CRASH (switch)")
-                                break
-                        elif pre.type[0] == "c" and pre.crstat:
-                            t.relpos = 0
-                            print(f"train {t.num} CRASH (crossing)")
-                            break
-                        else:
-                            t.block = pre
-                            t.relpos += t.block.leng
-                    else:
-                        #at the beginning
-                        t.relpos = 0
-                        break
-            t.block.occupy()
-
-            print(f"train {t.num} dist along block {t.block.num}: {t.relpos}")
-
-        for b in self.blocks:
-            if b.brknrail or b.dsrptrck or b.nopower:
-                b.occupy()
-
-        for it, b in self.items.items():
-            it.setTrackPen(WHITPEN)
-
-            if b.type[0] == "w": #switch
-                if "l" not in b.type: #main
-                    it.setTrackPen(BLCKPEN, b.swstat != 1)
-                    it.setTrackPen(PURPPEN if b.is_occupied else WHITPEN, b.swstat == 1)
-
-                else: #branch (light)
-                    if b.is_occupied: it.setTrackPen(PURPPEN)
-                    elif b.listat == "green": it.setTrackPen(GRENPEN)
-                    elif b.listat == "yellow": it.setTrackPen(YELWPEN)
-                    else: it.setTrackPen(REDDPEN)
-            
-            elif b.is_occupied:
-                it.setTrackPen(PURPPEN)
+            #km/hr * 1hr/3600s * 1000m/1km = 10/36 m/s, and each tick is 0.1s
+            if t.speed != 0: 
+                t.pos_on_b += t.speed * (10/36) * TICKSPEED
+                going_forward = t.speed > 0
                 
-            elif b.type[0] == "c": #crossing
-                if b.crstat: it.setTrackPen(BLCKPEN)
+                while t.pos_on_b > t.block.mylength or t.pos_on_b < 0:
+                    cap = t.block.mylength if going_forward else 0
+                    if len(t.block.next if going_forward else t.block.prev) == 0: #reached an end
+                        t.pos_on_b = cap
+                        break
+                        
+                    if going_forward:
+                        to_b = self.blocks[t.block.next[t.block.switch_state if t.block.is_main_switch() else 0]-1] 
+                    else:
+                        to_b = self.blocks[int(t.block.prev[0])-1]
+                    
+                    if to_b.is_occupied:
+                        t.pos_on_b = cap
+                        print(f"train {t.num} CRASH (occupied block)")
+                        break
+                    if to_b.is_main_switch() and not going_forward and int(to_b.cur_switch_option()[-1]) != t.block.num: #switch is not aligned with this block
+                        t.pos_on_b = cap
+                        print(f"train {t.num} CRASH (switch)")
+                        break
+                    if to_b.is_crossing() and to_b.crossing_state:
+                        t.pos_on_b = cap
+                        print(f"train {t.num} CRASH (crossing)")
+                        break
+
+                    t.block.deoccupy()
+                    t.pos_on_b += t.block.mylength * sign(not going_forward)
+                    t.block = to_b
+                    t.update()
+            t.block.occupy()
+            # print(f"train {t.num} dist along block {t.block.num}: {t.relpos}")
+        
+        for it in self.items: it.update()
 
 class MainWindow(QWidget):
     def __init__(self, tkm:TrackMap):
@@ -401,31 +494,31 @@ class UIControls:
             border: 1px solid black;
             padding: 4px;
         """)
-        binfo.setGeometry(0,0,300,120)
+        binfo.setGeometry(0,0,500,120)
         binfo.setMaximumSize(binfo.width(),binfo.height())
         binfo.setMinimumSize(binfo.width(),binfo.height())
 
-        self.chckbx = c = QCheckBox("Break Block Rail")
-        self.chckbx1 = c1 = QCheckBox("Disrupt Block Track Circuit")
-        self.chckbx2 = c2 = QCheckBox("Cut Block Power")
+        self.chkbrk = brk = QCheckBox("Break Block Rail")
+        self.chkcirc = circ = QCheckBox("Disrupt Block Track Circuit")
+        self.chkpower = pwr = QCheckBox("Cut Overhead Power")
 
         def occ():
             if self.selectedRect:
-                if c.isChecked() or c1.isChecked() or c2.isChecked():
+                if brk.isChecked() or circ.isChecked():
                     self.selectedRect.block.occupy()
                 else:
                     self.selectedRect.block.deoccupy()
-                self.selectedRect.block.brknrail = c.isChecked()
-                self.selectedRect.block.dsrptrck = c1.isChecked()
-                self.selectedRect.block.nopower = c2.isChecked()
+                self.selectedRect.block.brknrail = brk.isChecked()
+                self.selectedRect.block.dsrptrck = circ.isChecked()
+                self.selectedRect.block.nopower = pwr.isChecked()
 
         lay = QVBoxLayout(controls)
 
-        for c0 in [c,c1,c2]:
-            c0.setTristate(False)
-            c0.setChecked(False)
-            c0.stateChanged.connect(occ)
-            lay.addWidget(c0)
+        for c in [brk,circ,pwr]:
+            c.setTristate(False)
+            c.setChecked(False)
+            c.stateChanged.connect(occ)
+            lay.addWidget(c)
 
         tui_btn = QPushButton("Test UI", controls); 
         tui_btn.clicked.connect(m.testui.show)
@@ -435,33 +528,33 @@ class UIControls:
         hl.addWidget(tui_btn)
 
     def display_block(self, b:Block):
-        dir = "Bidirectional" if b.dir == "bid" else b.dir
+        dir = "Bidirectional" if b.directionality == "bid" else b.directionality
         type:str
         if b.type[0] in "nb": type = "Track"
-        if b.type[0] == "w": 
-            b0 = self.m.tkm.blocks[int(b.first_switch_option()[0])-1] if "l" in b.type else b    
+        if b.is_switch(): 
+            b0 = self.m.tkm.blocks[int(b.first_switch_option()[0])-1] if b.has_light() else b    
             chosen = b0.cur_switch_option()
             type = f"Switch (Currently {chosen[0]}→{chosen[1]})"
-        if b.type[0] == "t": type = b.type[2:] + " Station"
-        if b.type[0] == "c": type = "Track Crossing"
+        if b.is_station(): type = f"{b.type[2:]} Station, Ticket Sales: {str(b.tickets)}, {str(b.num_boarding)} boarding, {str(b.num_standing)} standing"
+        if b.is_crossing(): type = "Track Crossing"
         
-        self.binfo.setText(f"Directionality: {dir}"+
-                           f"\nCommanded Authority: {b.auth} km"+
-                           f"\nCommanded Speed: {b.spd} km/hr"+
-                           f"\nGrade: {b.grade}%"+
-                           f"\nSpeed Limit: {b.spdlim} km/hr"+
-                           f"\nInfrastructure: {type}"+
+        self.binfo.setText(f"Directionality: {dir}"
+                           f"\nCommanded Authority: {b.authority} km"
+                           f"\nCommanded Speed: {b.speed} km/hr"
+                           f"\nGrade: {b.grade}%"
+                           f"\nSpeed Limit: {b.speed_limit} km/hr"
+                           f"\nInfrastructure: {type}"
                            f"\nOccupied: {b.is_occupied}")
     
     def update(self):
         if self.selectedRect: 
             self.display_block(self.selectedRect.block)
-            for it in self.m.tkm.items.keys():
+            for it in self.m.tkm.items:
                 it.is_selected = False
                 if not it.isUnderMouse(): it.setPen(NONEPEN)
             self.selectedRect.setPen(PURPPEN)
             self.selectedRect.is_selected = True
-        for c in [self.chckbx,self.chckbx1,self.chckbx2]: c.setEnabled(self.selectedRect != None)
+        for c in [self.chkbrk,self.chkcirc,self.chkpower]: c.setEnabled(self.selectedRect != None)
     
 class TestUI(QWidget):
     def __init__(self, m: MainWindow):
@@ -504,10 +597,10 @@ class TestUI(QWidget):
         self.uilayout.addLayout(self.outputlayout)
 
     def blockOut(self, b:Block)->str:
-        return f"\t\t\tBlock {b.num}   \toccupancy:{b.is_occupied}\tswitch state:{b.swstat if b.type[0] == 'w' and 'l' not in b.type else 'N/A'}\tsignal state:{b.listat if b.type[0] == 'w' and 'l' in b.type else 'N/A'}"
+        return f"\t\t\tBlock {b.num}   \toccupancy:{b.is_occupied}\tswitch state:{b.switch_state if b.is_main_switch() else 'N/A'}\tsignal state:{b.light_state if b.is_branch_switch() else 'N/A'}"
     
     def trainOut(self, t:Train)->str:
-        return f"cmd spd:{t.block.spd}   cmd auth:{t.block.auth}   cur grade:{t.block.grade}   cur spd lim:{t.block.spdlim}   isbrokenrail:{t.block.brknrail}   isbrokentrackcircuit:{t.block.dsrptrck}   hasnopower:{t.block.nopower}   num passengers:{t.block.psngrs if t.block.type[0] == 't' else 'N/A'}"
+        return f"cmd spd:{t.block.speed}   cmd auth:{t.block.authority}   cur grade:{t.block.grade}   cur spd lim:{t.block.speed_limit}   isbrokenrail:{t.block.brknrail}   isbrokentrackcircuit:{t.block.dsrptrck}   hasnopower:{t.block.nopower}   num passengers:{t.block.tickets if t.block.is_station() else 'N/A'}"
 
     def addTrainOut(self, t):
         pertrn = QHBoxLayout()
@@ -531,7 +624,7 @@ class TestUI(QWidget):
 
         self.outputlayout.addLayout(perblk)
 
-    def addTrainIn(self, t):
+    def addTrainIn(self, t: Train):
         lbl = QLabel("Train "+str(t.num)+" Speed (km/hr):\t")
         inp = QLineEdit()
         btn = QPushButton("Confirm")
@@ -542,7 +635,7 @@ class TestUI(QWidget):
 
         def confirm():
             print(f"Train "+str(t.num)+" speed set to:"+inp.text())
-            t.spd = float(inp.text())
+            t.speed = float(inp.text())
 
         btn.clicked.connect(confirm)
 
@@ -555,22 +648,22 @@ class TestUI(QWidget):
 
     def addBlockIn(self, b: Block):
         swbox:QCheckBox = None
-        swches = []
-        if b.type[0] == "w" and not "l" in b.type:
-            swches = [b.first_switch_option(),b.second_switch_option()]
-            swbox = QCheckBox(f"Switch {swches[0][0]}-{swches[0][1]}/{swches[1][0]}-{swches[1][1]}")
+        switches = []
+        if b.is_main_switch():
+            switches = [b.first_switch_option(),b.second_switch_option()]
+            swbox = QCheckBox(f"Switch {switches[0][0]}-{switches[0][1]}/{switches[1][0]}-{switches[1][1]}")
             swbox.setMinimumHeight(20)
         
         sig: QFormLayout = None
         sig_ed: QLineEdit
-        if "l" in b.type:
+        if b.has_light():
             sig_ed = QLineEdit()
             sig = QFormLayout()
             sig.addRow("Signal Color:", sig_ed)
             sig_ed.setMinimumHeight(20)
 
         crbox:QCheckBox = None
-        if b.type[0] == "c":
+        if b.is_crossing():
             crbox = QCheckBox("Crossing Active")
             crbox.setMinimumHeight(20)
 
@@ -587,17 +680,17 @@ class TestUI(QWidget):
         def confirm():
             print(f"Block {b.num} auth set to:", inp0.text())
             print(f"Block {b.num} spd set to:", inp.text())
-            b.auth = inp0.text()
-            b.spd = inp.text()
+            b.authority = inp0.text()
+            b.speed = inp.text()
             if swbox:
-                print(f"Block {b.num} switch set to:", swches[toint(swbox.isChecked())])
-                b.swstat = toint(swbox.isChecked())
+                print(f"Block {b.num} switch set to:", switches[to_int(swbox.isChecked())])
+                b.switch_state = to_int(swbox.isChecked())
             if crbox:
                 print(f"Block {b.num} crossing set to: ", "Active" if crbox.isChecked() else "Non-active")
-                b.crstat = crbox.isChecked() 
+                b.crossing_state = crbox.isChecked() 
             if sig:
                 print(f"Block {b.num} signal set to: ", sig_ed.text())
-                b.listat = sig_ed.text()
+                b.light_state = sig_ed.text()
 
         btn.clicked.connect(confirm)
 

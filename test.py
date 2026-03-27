@@ -29,5 +29,16 @@
 # prev.append("aa")
 # print(next)
 
-print("l" in "1341l")
+# print("l" in "1341l")
 # print("eyah".find(","))
+
+x = [1,2,3,2]
+
+def remall(x, l: list)->list:
+    for i in l: 
+        if i == x: l.remove(x)
+    return l
+
+remall(2, x)
+
+print(x)
