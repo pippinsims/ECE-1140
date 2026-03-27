@@ -140,13 +140,14 @@ class Block:
             self.num_standing = 0
             self.gentickets()
     
-    def is_switch(self)->bool: return self.type[0] == "w"
-    def is_main_switch(self)->bool: return self.is_switch() and "l" not in self.type
-    def is_branch_switch(self)->bool: return self.is_switch() and "l" in self.type
-    def is_beacon(self)->bool: return self.type[0] == "b"
-    def has_light(self)->bool: return self.is_beacon() or self.is_branch_switch()
-    def is_station(self)->bool: return self.type[0] == "t"
-    def is_crossing(self)->bool: return self.type[0] == "c"
+    def is_switch        (self) -> bool: return self.type[0] == "w"
+    def is_main_switch   (self) -> bool: return self.is_switch() and "l" not in self.type
+    def is_branch_switch (self) -> bool: return self.is_switch() and "l" in self.type
+    def is_beacon        (self) -> bool: return self.type[0] == "b"
+    def has_light        (self) -> bool: return self.is_beacon() or self.is_branch_switch()
+    def is_station       (self) -> bool: return self.type[0] == "t"
+    def is_crossing      (self) -> bool: return self.type[0] == "c"
+
     def cur_switch_option(self):
         return [self.first_switch_option(),self.second_switch_option()][self.switch_state]
     def first_switch_option(self) -> tuple[int,int]: #from, to
@@ -228,23 +229,19 @@ class TrackRectItem(QGraphicsRectItem):
 
         txt = str(b.num)
         if b.is_crossing(): self.ic2 = scene.addPixmap(pixmap('railroad-crossing','white'))
-        if b.has_light(): self.ic2 = scene.addPixmap(pixmap('traffic-light','white'))
+        if b.has_light  (): self.ic2 = scene.addPixmap(pixmap('traffic-light','white'))
         elif b.is_switch(): self.downArrow = []
-        if b.is_beacon(): self.ic3 = scene.addPixmap(pixmap('beacon','white'))
-        if b.is_station(): self.ic2 = scene.addPixmap(pixmap('building','white'))
-
+        if b.is_station (): self.ic2 = scene.addPixmap(pixmap('building','white'))
+        if b.is_beacon  (): self.ic3 = scene.addPixmap(pixmap('beacon','white'))
         
-        # self.ic = scene.addPixmap(pixmap("train", "purple"))
-        self.ic1.setPos((b.x)*BOXSIZE,b.y*BOXSIZE)
-        self.ic2.setPos((b.x + 0.5)*BOXSIZE,b.y*BOXSIZE)
+        self.ic1.setPos((b.x      )*BOXSIZE, b.y     *BOXSIZE)
+        self.ic2.setPos((b.x + 0.5)*BOXSIZE, b.y     *BOXSIZE)
         self.ic3.setPos((b.x + 0.5)*BOXSIZE,(b.y+0.5)*BOXSIZE)
         
         self.text = text = QGraphicsSimpleTextItem(txt, self)
         text.setFont(QFont("Segoe UI", 12))
-        if b.is_main_switch():
-            text.setPos((b.x+0.5)*BOXSIZE-div(text.boundingRect().width(),2), b.y*BOXSIZE)
-        else:
-            text.setPos((b.x+0.25)*BOXSIZE-div(text.boundingRect().width(),2), (b.y+0.5)*BOXSIZE)
+        if b.is_main_switch(): text.setPos((b.x+0.5 )*BOXSIZE-div(text.boundingRect().width(),2),  b.y     *BOXSIZE)
+        else:                  text.setPos((b.x+0.25)*BOXSIZE-div(text.boundingRect().width(),2), (b.y+0.5)*BOXSIZE)
         text.setPen(WHITPEN)
 
         if b.card: self.drawTrack(scene)
@@ -252,12 +249,13 @@ class TrackRectItem(QGraphicsRectItem):
     def mousePressEvent(self, event):
         b = self.block
         print(f"{str(b.num)} clicked! ({str(self.myx)},{str(self.myy)})")
-        global ui; ui.display_block(b)
+        global ui 
+        ui.display_block(b)
         ui.selectedRect = self
         self.is_selected = True
         
-        self.quietlySet(ui.chkbrk,b.brknrail)
-        self.quietlySet(ui.chkcirc,b.dsrptrck)
+        self.quietlySet(ui.chkbrk  ,b.brknrail)
+        self.quietlySet(ui.chkcirc ,b.dsrptrck)
         self.quietlySet(ui.chkpower,b.nopower)
 
     def quietlySet(self, c:QCheckBox, state):
@@ -288,13 +286,13 @@ class TrackRectItem(QGraphicsRectItem):
                             
         if b.has_light(): self.light_icon(b.light_state)
         if b.is_occupied: self.train_icon("white")
-        elif b.is_crossing() and b.crossing_state: self.setTrack(BLCKPEN)
+        if b.is_crossing() and b.crossing_state: self.setTrack(BLCKPEN)
 
-    def train_icon   (self, color): self.ic1.setPixmap(pixmap('train',color) if color else QPixmap())
+    def train_icon   (self, color): self.ic1.setPixmap(pixmap('train',            color) if color else QPixmap())
     def crossing_icon(self, color): self.ic2.setPixmap(pixmap('railroad-crossing',color) if color else QPixmap())
-    def station_icon (self, color): self.ic2.setPixmap(pixmap('building',color) if color else QPixmap())
-    def light_icon   (self, color): self.ic2.setPixmap(pixmap('traffic-light',color) if color else QPixmap())
-    def beacon_icon  (self, color): self.ic3.setPixmap(pixmap('beacon',color) if color else QPixmap())
+    def station_icon (self, color): self.ic2.setPixmap(pixmap('building',         color) if color else QPixmap())
+    def light_icon   (self, color): self.ic2.setPixmap(pixmap('traffic-light',    color) if color else QPixmap())
+    def beacon_icon  (self, color): self.ic3.setPixmap(pixmap('beacon',           color) if color else QPixmap())
 
     def setTrack(self, p:QPen, downward = False):
         for x in self.downArrow if downward else self.upArrow:
