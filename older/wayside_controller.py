@@ -5,6 +5,7 @@ Wayside Controller – Train Control System
 
   Green Line (150 blocks):  WG1 = blocks  1–75   | WG2 = blocks  76–150
   Red   Line  (76 blocks):  WR1 = blocks  1–38   | WR2 = blocks  39–76
+  Blue  Line  (15 blocks):  WB1 = blocks  1–7    | WB2 = blocks   8–15
 
 Each wayside owns its own block range, switches, and crossings.
 Each wayside can independently run either the built-in default logic
@@ -124,13 +125,28 @@ RED_SPEED_LIMITS = {
     71:55,72:55,73:55,74:55,75:55,76:55,
 }
 
-# Blue Line removed
+# -- Blue Line ----------------------------------------------------------------
+BLUE_BLOCK_LENGTHS = {
+    1:50,2:50,3:50,4:50,5:50,6:50,7:50,
+    8:50,9:50,10:50,11:50,12:50,13:50,14:50,15:50,
+}
+
+BLUE_SWITCHES = {
+    "SW5": {"host":5, "normal":(6,"5->6"), "reverse":(11,"5->11"),
+            "description":"Blocks 5->6 (Branch B) / 5->11 (Branch C)"},
+}
+
+BLUE_CROSSINGS = [3]
+
+BLUE_STATIONS = {10,15}
+
+BLUE_SPEED_LIMITS = {b:50 for b in range(1,16)}
 
 
 # =============================================================================
 # WAYSIDE CONFIGURATION  -  Single source of truth for all 6 waysides
 # =============================================================================
-# WAYSIDE_CONFIGS is keyed by wayside ID: WG1, WG2, WR1, WR2.
+# WAYSIDE_CONFIGS is keyed by wayside ID: WG1, WG2, WR1, WR2, WB1, WB2.
 # Each entry provides all the static data a wayside sub-tab needs.
 # The dashboard and WaysideFrame both import from this dict.
 
@@ -154,7 +170,8 @@ WG1_BLOCKS = range(1,  76)   # Green: blocks  1-75   owns SW12, SW28, SW57, SW62
 WG2_BLOCKS = range(76, 151)  # Green: blocks 76-150  owns SW76, SW85
 WR1_BLOCKS = range(1,  39)   # Red:   blocks  1-38   owns SW9, SW15, SW27, SW32, SW38
 WR2_BLOCKS = range(39, 77)   # Red:   blocks 39-76   owns SW43, SW52
-
+WB1_BLOCKS = range(1,  8)    # Blue:  blocks  1-7    owns SW5
+WB2_BLOCKS = range(8,  16)   # Blue:  blocks  8-15   no switches
 
 
 def compute_signal_blocks(stations, switches_def, block_lengths):
@@ -199,7 +216,12 @@ _WR1_SB = compute_signal_blocks(
 _WR2_SB = compute_signal_blocks(
     RED_STATIONS, _slice_switches(RED_SWITCHES, WR2_BLOCKS),
     _slice(RED_BLOCK_LENGTHS, WR2_BLOCKS))
-
+_WB1_SB = compute_signal_blocks(
+    BLUE_STATIONS, _slice_switches(BLUE_SWITCHES, WB1_BLOCKS),
+    _slice(BLUE_BLOCK_LENGTHS, WB1_BLOCKS))
+_WB2_SB = compute_signal_blocks(
+    BLUE_STATIONS, _slice_switches(BLUE_SWITCHES, WB2_BLOCKS),
+    _slice(BLUE_BLOCK_LENGTHS, WB2_BLOCKS))
 
 
 # WAYSIDE_CONFIGS - single source of truth imported by WaysideFrame and WaysideDashboard
@@ -248,14 +270,35 @@ WAYSIDE_CONFIGS = {
         "crossings":     _slice_crossings(RED_CROSSINGS, WR2_BLOCKS),
         "signal_blocks": _WR2_SB,
     },
-
+    "WB1": {
+        "line":          "Blue",
+        "label":         "WB1  (Blocks 1-7)",
+        "color":         "#4fc3f7",
+        "blocks":        set(WB1_BLOCKS),
+        "block_lengths": _slice(BLUE_BLOCK_LENGTHS, WB1_BLOCKS),
+        "speed_limits":  _slice(BLUE_SPEED_LIMITS,  WB1_BLOCKS),
+        "switches":      _slice_switches(BLUE_SWITCHES, WB1_BLOCKS),
+        "crossings":     _slice_crossings(BLUE_CROSSINGS, WB1_BLOCKS),
+        "signal_blocks": _WB1_SB,
+    },
+    "WB2": {
+        "line":          "Blue",
+        "label":         "WB2  (Blocks 8-15)",
+        "color":         "#4fc3f7",
+        "blocks":        set(WB2_BLOCKS),
+        "block_lengths": _slice(BLUE_BLOCK_LENGTHS, WB2_BLOCKS),
+        "speed_limits":  _slice(BLUE_SPEED_LIMITS,  WB2_BLOCKS),
+        "switches":      _slice_switches(BLUE_SWITCHES, WB2_BLOCKS),
+        "crossings":     _slice_crossings(BLUE_CROSSINGS, WB2_BLOCKS),
+        "signal_blocks": _WB2_SB,
+    },
 }
 
 # Ordered wayside IDs per line - used to build line tabs in the correct order
 LINE_WAYSIDES = {
     "Green": ["WG1", "WG2"],
     "Red":   ["WR1", "WR2"],
-
+    "Blue":  ["WB1", "WB2"],
 }
 
 # O(1) routing lookup: (line_name, block_number) -> wayside_id
@@ -431,12 +474,17 @@ def compute_wayside_outputs(block_state, block_lengths, switches_def,
             switch_states[sw_id] = "normal"
             continue
 
-        # Reverse only to let a merging train through; normal in all other cases
-        # (covers: nobody on either branch, both branches occupied, only normal occupied)
+        # Count trains whose authority reach covers each branch
+        norm_count = sum(1 for s in reach_map.values() if norm_blk in s)
+        rev_count  = sum(1 for s in reach_map.values() if rev_blk  in s)
+
+        # If a train is already on the reverse branch it needs to merge back
         if rev_blk in occupied and norm_blk not in occupied:
             switch_states[sw_id] = "reverse"
+        elif rev_count > norm_count and rev_count > 0:
+            switch_states[sw_id] = "reverse"        # more trains need reverse
         else:
-            switch_states[sw_id] = "normal"
+            switch_states[sw_id] = "normal"          # default / tie -> normal
 
     # -- Crossing logic -------------------------------------------------------
     crossing_states = {}
@@ -503,7 +551,7 @@ class WaysideFrame(tk.Frame):
     Layout
     ------
     Header bar  (title + mode badge)
-    Outer Notebook with 2 line tabs  (Green | Red)
+    Outer Notebook with 3 line tabs  (Green | Red | Blue)
       Each line tab:
         Maintenance toggle bar  (shared by both waysides on the line)
         Inner Notebook with 2 sub-tabs  (WG1|WG2 etc.)
@@ -574,7 +622,7 @@ class WaysideFrame(tk.Frame):
 
         Parameters
         ----------
-        wayside_id : "WG1" | "WG2" | "WR1" | "WR2"
+        wayside_id : "WG1" | "WG2" | "WR1" | "WR2" | "WB1" | "WB2"
         fn         : callable with the same signature as compute_wayside_outputs,
                      or None to revert to the built-in default logic.
         """
@@ -597,7 +645,7 @@ class WaysideFrame(tk.Frame):
 
         Parameters
         ----------
-        line_name  : "Green" | "Red"
+        line_name  : "Green" | "Red" | "Blue"
         block_data : {block_num: {"occupied": bool,
                                   "cmd_speed": float,  # km/h (metric)
                                   "authority": float}} # km  (metric)
@@ -641,7 +689,7 @@ class WaysideFrame(tk.Frame):
                  font=("Helvetica", 18, "bold"),
                  bg=C["header"], fg=C["white"]).pack(side="left", padx=20)
 
-        tk.Label(hdr, text="WG1 · WG2  |  WR1 · WR2",
+        tk.Label(hdr, text="WG1 · WG2  |  WR1 · WR2  |  WB1 · WB2",
                  font=("Helvetica", 10),
                  bg=C["header"], fg=C["muted"]).pack(side="left", padx=8)
 
@@ -678,7 +726,7 @@ class WaysideFrame(tk.Frame):
         outer_nb = ttk.Notebook(self)
         outer_nb.pack(fill="both", expand=True, padx=8, pady=8)
 
-        for line_name in ["Green", "Red"]:
+        for line_name in ["Green", "Red", "Blue"]:
             line_frame = tk.Frame(outer_nb, bg=C["bg"])
             outer_nb.add(line_frame, text=f"  {line_name} Line  ")
             self._build_line_tab(line_frame, line_name)
@@ -693,11 +741,8 @@ class WaysideFrame(tk.Frame):
         line_color = WAYSIDE_CONFIGS[wid_list[0]]["color"]
 
         # -- Shared maintenance toggle bar (both waysides on this line) -------
-        # bd=0 and highlightthickness=0 prevent border artifacts on Windows
-        maint_bar = tk.Frame(parent, bg=C["bg"], pady=4,
-                             borderwidth=0, highlightthickness=0)
+        maint_bar = tk.Frame(parent, bg=C["bg"], pady=4)
         maint_bar.pack(fill="x", padx=6)
-        maint_bar.pack_propagate(True)
 
         maint_btn = tk.Button(
             maint_bar,
@@ -730,8 +775,7 @@ class WaysideFrame(tk.Frame):
         inner_nb.pack(fill="both", expand=True, padx=4, pady=4)
 
         for wid in wid_list:
-            sub_frame = tk.Frame(inner_nb, bg=C["bg"],
-                                 borderwidth=0, highlightthickness=0)
+            sub_frame = tk.Frame(inner_nb, bg=C["bg"])
             inner_nb.add(sub_frame, text=f"  {wid}  ")
             self._build_wayside_subtab(sub_frame, wid)
 
@@ -765,8 +809,8 @@ class WaysideFrame(tk.Frame):
                             bg=C["bg"], sashwidth=5)
         pw.pack(fill="both", expand=True, padx=4, pady=4)
 
-        left  = tk.Frame(pw, bg=C["bg"], borderwidth=0, highlightthickness=0)
-        right = tk.Frame(pw, bg=C["bg"], borderwidth=0, highlightthickness=0)
+        left  = tk.Frame(pw, bg=C["bg"])
+        right = tk.Frame(pw, bg=C["bg"])
         pw.add(left,  minsize=480)
         pw.add(right, minsize=440)
 
@@ -787,14 +831,8 @@ class WaysideFrame(tk.Frame):
                  bg=color, fg="#000000").pack(padx=8)
 
     def _make_scrollable(self, parent, builder_fn, *args):
-        """
-        Wrap builder_fn in a vertically scrollable canvas.
-        Windows-safe: forces scrollregion sync on every scroll event,
-        binds MouseWheel on all child widgets, and eliminates border/highlight
-        artifacts that cause widget overlap on Windows GDI repaints.
-        """
-        canvas = tk.Canvas(parent, bg=C["bg"],
-                           highlightthickness=0, borderwidth=0)
+        """Wrap builder_fn in a vertically scrollable canvas."""
+        canvas = tk.Canvas(parent, bg=C["bg"], highlightthickness=0)
         sb = ttk.Scrollbar(parent, orient="vertical",
                            command=canvas.yview,
                            style="Vertical.TScrollbar")
@@ -802,38 +840,16 @@ class WaysideFrame(tk.Frame):
         sb.pack(side="right", fill="y")
         canvas.pack(fill="both", expand=True)
 
-        frame = tk.Frame(canvas, bg=C["bg"], borderwidth=0, highlightthickness=0)
+        frame = tk.Frame(canvas, bg=C["bg"])
         win   = canvas.create_window((0, 0), window=frame, anchor="nw")
-
-        def _update_scrollregion(event=None):
-            canvas.configure(scrollregion=canvas.bbox("all"))
-            canvas.update_idletasks()
-
-        def _update_width(event):
-            canvas.itemconfig(win, width=event.width)
-            _update_scrollregion()
-
-        def _on_mousewheel(event):
-            canvas.yview_scroll(-1 * (event.delta // 120), "units")
-            _update_scrollregion()
-
-        def _bind_mousewheel(widget):
-            """Recursively bind MouseWheel to every child widget."""
-            widget.bind("<MouseWheel>", _on_mousewheel)
-            for child in widget.winfo_children():
-                _bind_mousewheel(child)
-
-        frame.bind("<Configure>", _update_scrollregion)
-        canvas.bind("<Configure>", _update_width)
-        canvas.bind("<MouseWheel>", _on_mousewheel)
-        canvas.bind("<Enter>", lambda e: canvas.focus_set())
+        frame.bind("<Configure>",
+                   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>",
+                    lambda e: canvas.itemconfig(win, width=e.width))
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(-1*(e.delta//120), "units"))
 
         builder_fn(frame, *args)
-
-        # Bind mousewheel on all children after they are built
-        _bind_mousewheel(frame)
-        # Force an initial scrollregion calculation
-        canvas.after(50, _update_scrollregion)
 
     def _card(self, parent, title):
         """Return the inner frame of a titled card panel."""
@@ -878,8 +894,7 @@ class WaysideFrame(tk.Frame):
 
             spd_mph = kmh_to_mph(ws["speed_limits"].get(blk, 0))
 
-            row = tk.Frame(parent, bg=row_bg,
-                          borderwidth=0, highlightthickness=0)
+            row = tk.Frame(parent, bg=row_bg)
             row.pack(fill="x", padx=4, pady=1)
 
             tk.Label(row, text=f"{blk}{tag}",
@@ -1194,7 +1209,7 @@ class WaysideFrame(tk.Frame):
         """Reschedule the live data poll 100 ms from now."""
         if not self._testing_mode:
             self._poll_live_data()
-            self._live_job = self.after(1000, self._schedule_live_poll)
+            self._live_job = self.after(100, self._schedule_live_poll)
 
     def _poll_live_data(self):
         """
@@ -1202,7 +1217,7 @@ class WaysideFrame(tk.Frame):
         Replace with a real CTC / Track Model data fetch when ready.
 
         Example (once CTC is connected):
-            for line in ["Green", "Red"]:
+            for line in ["Green", "Red", "Blue"]:
                 data = ctc_module.get_block_states(line)
                 self.receive_live_data(line, data)
         """

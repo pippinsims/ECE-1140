@@ -5,7 +5,7 @@ The top-level window the programmer interacts with.
 
 Features
 --------
-- Track map display (Green/Red line image)
+- Track map display (Green/Red and Blue line images)
 - "Open Controller" button  -> live-mode controller window
 - "Open Testing"   button  -> testing-mode controller window
 - "PLC Manager"    button  -> popup to upload/clear PLC files per wayside
@@ -13,7 +13,7 @@ Features
 - Hot-swap: PLC uploads and clears take effect on the very next refresh tick
 
 PLC Manager layout (inside the popup):
-  Organised by line (Green / Red sections)
+  Organised by line (Green / Red / Blue sections)
   One row per wayside: [name] [file path entry] [Browse] [Upload] [status] [Clear]
 
 Relationship to wayside_controller.py:
@@ -172,14 +172,15 @@ class WaysideDashboard(tk.Tk):
                  font=("Helvetica", 18, "bold"),
                  bg=C["header"], fg=C["white"]).pack(anchor="w")
         tk.Label(title_block,
-                 text="WG1 · WG2  |  WR1 · WR2",
+                 text="WG1 · WG2  |  WR1 · WR2  |  WB1 · WB2",
                  font=("Helvetica", 9),
                  bg=C["header"], fg=C["muted"]).pack(anchor="w")
 
         status_block = tk.Frame(hdr, bg=C["header"], padx=20)
         status_block.pack(side="right", pady=14)
         for label, color in [("Green Line (WG1 · WG2)", C["green"]),
-                              ("Red Line   (WR1 · WR2)", C["red"])]:
+                              ("Red Line   (WR1 · WR2)", C["red"]),
+                              ("Blue Line  (WB1 · WB2)", C["blue"])]:
             row = tk.Frame(status_block, bg=C["header"])
             row.pack(anchor="e", pady=1)
             tk.Label(row, text="\u25cf", fg=color, bg=C["header"],
@@ -198,14 +199,20 @@ class WaysideDashboard(tk.Tk):
         script_dir = os.path.dirname(os.path.abspath(__file__))
 
         rg_card = self._map_card(outer, "RED & GREEN LINE", C["green"])
-        rg_card.pack(side="left", fill="both", expand=True)
+        rg_card.pack(side="left", fill="both", expand=True, padx=(0, 6))
         rg_path = os.path.join(script_dir, "Picture1.png")
         if PIL_AVAILABLE and os.path.exists(rg_path):
             self._load_map_image(rg_card, rg_path, key="rg")
         else:
             self._map_fallback(rg_card, "Picture1.png")
 
-
+        blue_card = self._map_card(outer, "BLUE LINE", C["blue"])
+        blue_card.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        blue_path = os.path.join(script_dir, "blue.png")
+        if PIL_AVAILABLE and os.path.exists(blue_path):
+            self._load_map_image(blue_card, blue_path, key="blue")
+        else:
+            self._map_fallback(blue_card, "blue.png")
 
     def _map_card(self, parent, title, accent_color):
         card = tk.Frame(parent, bg=C["card"], bd=0)
@@ -786,7 +793,8 @@ class WaysideDashboard(tk.Tk):
             ("  WG2 ", "Green", " 76 – 150 ", "SW76, SW85",             "Block 108"),
             ("  WR1 ", "Red  ", "  1 –  38 ", "SW9, SW15, SW27, SW32, SW38", "Block 11"),
             ("  WR2 ", "Red  ", " 39 –  76 ", "SW43, SW52",             "Block 47"),
-
+            ("  WB1 ", "Blue ", "  1 –   7 ", "SW5",                    "Block 3"),
+            ("  WB2 ", "Blue ", "  8 –  15 ", "(none)",                 "(none)"),
         ]
         for wid, line, blks, switches, crossings in rows:
             ins(f"  {wid}", "yellow")
