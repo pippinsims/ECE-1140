@@ -1067,10 +1067,24 @@ class WaysideFrame(tk.Frame):
 
     def _refresh(self, *_):
         """
-        Recompute outputs for every wayside and update all output widgets.
-        Called on every input change (testing mode) or 100 ms tick (live mode).
-        Each wayside uses its own compute function (_compute_fns[wid]).
+        Recompute outputs for every wayside and update ONLY widgets whose
+        displayed value has actually changed since the last refresh.
+
+        Switch labels, signal dots, and crossing labels each carry a
+        _cache dict keyed by (wid, id) that stores the last-rendered
+        value.  A .config() call is only issued when the new value
+        differs from the cache, eliminating the per-tick full repaint
+        that was corrupting the layout.
+
+        Called every 1 s in live mode (via _schedule_live_poll) or
+        immediately on any input change in testing mode.
         """
+        # Initialise render caches on first call
+        if not hasattr(self, "_sw_cache"):
+            self._sw_cache  = {}   # (wid, sw_id) -> last rendered pos
+            self._sig_cache = {}   # (wid, blk)   -> (bg, sig_text, sig_fg, sig_font)
+            self._cx_cache  = {}   # (wid, cx)    -> last rendered state
+
         for wid, ws in self.waysides.items():
             # -- Gather block_state from UI vars ------------------------------
             block_state = {}
@@ -1082,8 +1096,8 @@ class WaysideFrame(tk.Frame):
                     speed_mph, auth_miles = 0.0, 0.0
                 block_state[blk] = {
                     "occupied":  bvars["occupied"].get(),
-                    "cmd_speed": mph_to_kmh(speed_mph),    # convert to km/h for logic
-                    "authority": miles_to_km(auth_miles),  # convert to km for logic
+                    "cmd_speed": mph_to_kmh(speed_mph),
+                    "authority": miles_to_km(auth_miles),
                 }
 
             # -- Run this wayside's compute function --------------------------
@@ -1100,17 +1114,20 @@ class WaysideFrame(tk.Frame):
             occupied_blks = {b for b, s in block_state.items() if s["occupied"]}
             in_maint      = ws["maintenance"]
 
-            # -- Update switch labels -----------------------------------------
+            # -- Update switch labels (only on change) ------------------------
             for sw_id, computed_pos in result["switches"].items():
                 entry = ws["sw_labels"].get(sw_id)
                 if not entry:
                     continue
                 pos_lbl, route_lbl, override_var, _ = entry
-                sw = ws["switches"][sw_id]
-
-                # In maintenance mode the programmer controls the position manually
+                sw  = ws["switches"][sw_id]
                 pos = override_var.get() if in_maint else computed_pos
 
+                cache_key = (wid, sw_id)
+                if self._sw_cache.get(cache_key) == pos:
+                    continue   # nothing changed — skip the .config() calls
+
+                self._sw_cache[cache_key] = pos
                 if pos == "normal":
                     pos_lbl.config(text="NORMAL",  fg=C["green"])
                     route_lbl.config(text=sw["normal"][1],  fg=C["muted"])
@@ -1118,7 +1135,7 @@ class WaysideFrame(tk.Frame):
                     pos_lbl.config(text="REVERSE", fg=C["yellow"])
                     route_lbl.config(text=sw["reverse"][1], fg=C["yellow"])
 
-            # -- Update signal grid -------------------------------------------
+            # -- Update signal grid (only on change) --------------------------
             for blk, computed_sig in result["signals"].items():
                 entry = ws["sig_labels"].get(blk)
                 if not entry:
@@ -1126,7 +1143,7 @@ class WaysideFrame(tk.Frame):
                 dot, cell, num_lbl, override_var, cycle_btn, spd_lbl = entry
                 is_occ = blk in occupied_blks
 
-                # Choose cell background
+                # Determine desired background
                 if is_occ:
                     bg = C["occupied"]
                 elif in_maint:
@@ -1134,28 +1151,46 @@ class WaysideFrame(tk.Frame):
                 else:
                     bg = C["reach"] if blk in all_reach else C["bg"]
 
+                # Determine desired dot appearance
+                if computed_sig is None:
+                    sig_text  = "—"
+                    sig_fg    = C["muted"]
+                    sig_font  = ("Helvetica", 10)
+                else:
+                    sig       = override_var.get() if in_maint else computed_sig
+                    sig_text  = "●"
+                    sig_fg    = SIG_COLOR.get(sig, C["muted"])
+                    sig_font  = ("Helvetica", 12)
+
+                cache_key  = (wid, blk)
+                cached_val = self._sig_cache.get(cache_key)
+                new_val    = (bg, sig_text, sig_fg, sig_font)
+
+                if cached_val == new_val:
+                    continue   # nothing changed — skip all .config() calls
+
+                self._sig_cache[cache_key] = new_val
+
+                # Apply background to all four cell widgets
                 for w in (cell, dot, num_lbl, spd_lbl):
                     w.config(bg=bg)
 
-                if computed_sig is None:
-                    # No physical signal at this block - show dash
-                    dot.config(text="—", fg=C["muted"], font=("Helvetica", 10))
-                    continue
+                dot.config(text=sig_text, fg=sig_fg, font=sig_font)
 
-                # Use override in maintenance mode, computed value otherwise
-                sig = override_var.get() if in_maint else computed_sig
-                dot.config(text="●",
-                           fg=SIG_COLOR.get(sig, C["muted"]),
-                           font=("Helvetica", 12))
-
-            # -- Update crossing labels ---------------------------------------
+            # -- Update crossing labels (only on change) ----------------------
             for cx, state in result["crossings"].items():
                 lbl = ws["cx_labels"].get(cx)
-                if lbl:
-                    lbl.config(
-                        text="ACTIVE"   if state == "active"   else "INACTIVE",
-                        fg  =C["orange"] if state == "active"  else C["green"]
-                    )
+                if not lbl:
+                    continue
+                cache_key = (wid, cx)
+                if self._cx_cache.get(cache_key) == state:
+                    continue   # nothing changed
+
+                self._cx_cache[cache_key] = state
+                lbl.config(
+                    text="ACTIVE"   if state == "active"   else "INACTIVE",
+                    fg  =C["orange"] if state == "active"  else C["green"]
+                )
 
     # =========================================================================
     # MODE MANAGEMENT

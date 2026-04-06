@@ -33,6 +33,13 @@ from wayside_controller import (
     C,
 )
 
+# SharedState bridge (optional – gracefully absent if run standalone)
+try:
+    from shared_state import SharedState
+    _SHARED_STATE_AVAILABLE = True
+except ImportError:
+    _SHARED_STATE_AVAILABLE = False
+
 try:
     from PIL import Image, ImageTk
     PIL_AVAILABLE = True
@@ -54,12 +61,15 @@ class WaysideDashboard(tk.Tk):
                  Reference to the open controller frame for hot-swap calls.
     """
 
-    def __init__(self):
+    def __init__(self, shared_state=None):
         super().__init__()
         self.title("Wayside Control System")
         self.geometry("1100x720")
         self.configure(bg=C["bg"])
         self.resizable(True, True)
+
+        # SharedState bridge (None when running standalone)
+        self._shared = shared_state
 
         # Initialise block data for the map/info area
         self.green_line_blocks = self._init_green_blocks()
@@ -82,6 +92,10 @@ class WaysideDashboard(tk.Tk):
         self._controller_frame = None
 
         self._setup_ui()
+
+        # Start SharedState polling loop (only when wired to CTC)
+        if self._shared is not None:
+            self.after(100, self._poll_shared_state)
 
     # =========================================================================
     # BLOCK DATA INITIALISATION
@@ -1029,3 +1043,146 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# =============================================================================
+# SharedState integration – appended by merger
+# =============================================================================
+
+def _wd_poll_shared_state(self):
+    """
+    Called every 100 ms via tkinter after().
+
+    CTC -> Wayside:
+      - Block occupancy / speed / authority  -> WaysideFrame.receive_live_data()
+      - Switch/signal overrides from CTC maintenance -> applied to WaysideFrame
+
+    Wayside -> CTC:
+      - Computed signals, switches, crossings -> SharedState.push_wayside_outputs()
+      - Switch-change events (delta only)     -> SharedState.push_switch_event()
+    """
+    if self._shared is None:
+        return
+
+    from wayside_controller import C, SIG_COLOR, LINE_WAYSIDES
+
+    # ── CTC block data -> Wayside ─────────────────────────────────────────────
+    new_ctc = self._shared.poll_ctc_data()
+    if new_ctc and self._controller_frame is not None:
+        for line_name, block_data in new_ctc.items():
+            if block_data:
+                self._controller_frame.receive_live_data(line_name, block_data)
+
+    # ── CTC maintenance state -> Wayside ─────────────────────────────────────
+    # If CTC puts a line into maintenance, toggle the matching wayside line too
+    new_maint = self._shared.poll_ctc_maintenance()
+    if new_maint and self._controller_frame is not None:
+        cf = self._controller_frame
+        for line_name, active in new_maint.items():
+            # Check whether the wayside line is already in the target state
+            wid_list = LINE_WAYSIDES.get(line_name, [])
+            if not wid_list:
+                continue
+            currently_on = cf.waysides[wid_list[0]].get("maintenance", False)
+            if active != currently_on:
+                # _toggle_maintenance flips the state; only call it when it differs
+                cf._toggle_maintenance(line_name)
+
+    # ── CTC maintenance overrides -> Wayside ──────────────────────────────────
+    new_overrides = self._shared.poll_ctc_overrides()
+    if new_overrides and self._controller_frame is not None:
+        cf = self._controller_frame
+        for line_name, ov in new_overrides.items():
+            # Apply switch overrides: find the matching wayside and set the
+            # override_var so the next _refresh() picks it up
+            for sw_id, position in ov.get("switch_overrides", {}).items():
+                for wid in LINE_WAYSIDES.get(line_name, []):
+                    ws = cf.waysides.get(wid, {})
+                    entry = ws.get("sw_labels", {}).get(sw_id)
+                    if entry:
+                        pos_lbl, route_lbl, override_var, override_btn = entry
+                        override_var.set(position)
+                        override_btn.config(
+                            text="Set NORMAL" if position == "reverse" else "Set REVERSE"
+                        )
+            # Apply signal overrides
+            for blk_str, color in ov.get("signal_overrides", {}).items():
+                blk = int(blk_str) if not isinstance(blk_str, int) else blk_str
+                for wid in LINE_WAYSIDES.get(line_name, []):
+                    ws = cf.waysides.get(wid, {})
+                    entry = ws.get("sig_labels", {}).get(blk)
+                    if entry:
+                        dot, cell, num_lbl, override_var, cycle_btn, spd_lbl = entry
+                        override_var.set(color)
+                        cycle_btn.config(
+                            text=color[:1].upper(),
+                            fg=SIG_COLOR.get(color, C["muted"])
+                        )
+        cf._refresh()
+
+    # ── Wayside outputs -> CTC ────────────────────────────────────────────────
+    if self._controller_frame is not None:
+        cf = self._controller_frame
+        inv_sig = {v: k for k, v in SIG_COLOR.items()}
+
+        outputs_by_line = {}
+        prev_switches = getattr(self, "_prev_switch_states", {})
+        new_prev = {}
+
+        for wid, ws in cf.waysides.items():
+            line = ws.get("line", "")
+            if line not in outputs_by_line:
+                outputs_by_line[line] = {"signals": {}, "switches": {}, "crossings": {}}
+
+            # Signals
+            for blk, entry in ws.get("sig_labels", {}).items():
+                dot, cell, num_lbl, override_var, cycle_btn, spd_lbl = entry
+                if ws.get("maintenance"):
+                    sig = override_var.get()
+                else:
+                    sig = inv_sig.get(dot.cget("fg"))
+                outputs_by_line[line]["signals"][blk] = sig
+
+            # Switches — detect changes and queue events
+            for sw_id, entry in ws.get("sw_labels", {}).items():
+                pos_lbl, route_lbl, override_var, _ = entry
+                pos = (override_var.get() if ws.get("maintenance")
+                       else pos_lbl.cget("text").lower())
+                outputs_by_line[line]["switches"][sw_id] = pos
+
+                key = (line, sw_id)
+                new_prev[key] = pos
+                old_pos = prev_switches.get(key)
+                if old_pos is not None and old_pos != pos:
+                    self._shared.push_switch_event(line, sw_id, old_pos, pos)
+
+            # Crossings
+            for cx, lbl in ws.get("cx_labels", {}).items():
+                state = "active" if lbl.cget("text") == "ACTIVE" else "inactive"
+                outputs_by_line[line]["crossings"][cx] = state
+
+        # Save switch state snapshot for next cycle's delta detection
+        self._prev_switch_states = {**prev_switches, **new_prev}
+
+        for line_name, outputs in outputs_by_line.items():
+            self._shared.push_wayside_outputs(line_name, outputs)
+
+    # Reschedule
+    self.after(100, self._poll_shared_state)
+
+
+# Monkey-patch onto WaysideDashboard
+WaysideDashboard._poll_shared_state = _wd_poll_shared_state
+
+
+def main(shared_state=None):
+    """
+    Launch the Wayside Dashboard.
+
+    Parameters
+    ----------
+    shared_state : SharedState | None
+        Pass the SharedState instance when running alongside the CTC.
+        Pass None (default) to run the dashboard standalone.
+    """
+    app = WaysideDashboard(shared_state=shared_state)
+    app.mainloop()
