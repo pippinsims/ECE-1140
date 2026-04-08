@@ -163,13 +163,12 @@ class Block:
     def is_crossing      (self) -> bool: return "c" in self.tokens()
     def is_tunnel        (self) -> bool: return "u" in self.tokens()
 
-    def station_name(self) -> str: return [x for x in self.tokens() if x[0] == "t"][0].split(",")[1]
-
     def cur_switch_option(self):
         return [self.first_switch_option(),self.second_switch_option()][self.switch_state]
     def first_switch_option(self) -> tuple[int,int]: #from, to
         swtype = [x for x in self.tokens() if x[0] == "w"][0]
         txt = swtype[1:swtype.find(",")]
+        if self.has_light(): txt = swtype[1:swtype.find(";")]
         return (txt[:txt.find("-")],txt[txt.find("-")+1:])
     def second_switch_option(self):
         swtype = [x for x in self.tokens() if x[0] == "w"][0]
@@ -187,7 +186,7 @@ class Block:
     def beacondata(self)->str:
         return self.type[2:] if self.is_beacon() else None
     
-    def setcard(self, c): self.card = c
+    # def setcard(self, c): self.card = c
     def setx(self, x): self.x = x
     def sety(self, y): self.y = y
     def occupy(self):
@@ -262,7 +261,8 @@ class TrackRectItem(QGraphicsRectItem):
         else:                  text.setPos((b.x+0.25)*BOXSIZE-div(text.boundingRect().width(),2), (b.y+0.5)*BOXSIZE)
         text.setPen(WHITPEN)
 
-        if b.card: self.drawTrack(scene)
+        #if b.card: 
+        self.drawTrack(scene)
     
     def mousePressEvent(self, event):
         b = self.block
@@ -342,10 +342,11 @@ class TrackRectItem(QGraphicsRectItem):
             
         sx,ex,sy,ey = [0.5]*4
         
-        if self.block.card == "left" : sx,ex = 1,0
-        if self.block.card == "right": sx,ex = 0,1
-        if self.block.card == "up"   : sy,ey = 1,0
-        if self.block.card == "down" : sy,ey = 0,1
+        # if self.block.card == "left" : sx,ex = 1,0
+        # if self.block.card == "right": sx,ex = 0,1
+        # if self.block.card == "up"   : sy,ey = 1,0
+        # if self.block.card == "down" : sy,ey = 0,1
+        sx,ex = 1,0
 
         def addArrow(stup, etup, downward = False):
             x, y = self.myx*BOXSIZE, self.myy*BOXSIZE
@@ -363,58 +364,34 @@ class TrackRectItem(QGraphicsRectItem):
                 addHead((ex,ey),(sx,sy), downward)
 
         #TODO factor in directionality
-
-        # if self.block.is_switch():
-        if self.block.is_main_switch():
-            #next 
-            # \ __ from
-            # /
-            #next
-            #    or
-            #      from
-            #next __ / 
-            #        \
-            #      from
-            self.text.setX(self.text.x()-10)
-            self.text.setY(self.text.y()+20)
-
-            b = self.block
-            
-            if len(self.block.next) > 1:
-                addArrow((sx,sy),(ex, 0))
-                addArrow((sx,sy),(ex, 1),True)
-                u,d = b.next[0], b.next[1]
-                plus = -0.25
+        if self.block.is_switch():
+            if self.block.is_main_switch():
+                #next 
+                # \ __ from
+                # /
+                #next
+                #    or
+                #      from
+                #next __ / 
+                #        \
+                #      from
+                self.text.setX(self.text.x()-10)
+                self.text.setY(self.text.y()+20)
+                if len(self.block.next) > 1:
+                    addArrow((sx,sy),(ex, 0))
+                    addArrow((sx,sy),(ex, 1),True)
+                else:
+                    addArrow((0,0.5),(1,0))
+                    addArrow((0,0.5),(1,1),True)
             else:
-                addArrow((0,0.5),(1,0))
-                addArrow((0,0.5),(1,1),True)
-                u,d = b.prev[0],b.prev[1]
-                plus = 0.25
-
-            self.upbranchtext = ut = QGraphicsSimpleTextItem(str(u), self)
-            ut.setFont(QFont("Segoe UI", 12))
-            ut.setPos((b.x+0.5+plus)*BOXSIZE-div(ut.boundingRect().width(),2),b.y*BOXSIZE+50)
-            ut.setPen(WHITPEN)
-            
-            self.dnbranchtext = dt = QGraphicsSimpleTextItem(str(d), self)
-            dt.setFont(QFont("Segoe UI", 12))
-            dt.setPos((b.x+0.5+plus)*BOXSIZE-div(dt.boundingRect().width(),2),b.y*BOXSIZE-10)
-            dt.setPen(WHITPEN)
-        # else:
-        #     if self.block.isdownward:
-        #         self.text.setY(self.text.y()-10)
-        #         self.text.setX(self.text.x()-7)
-        #         addArrow((sx,0),(ex, ey))
-        #     else:
-        #         addArrow((sx,1),(ex, ey))
+                if self.block.isdownward:
+                    self.text.setY(self.text.y()-10)
+                    self.text.setX(self.text.x()-7)
+                    addArrow((sx,0),(ex, ey))
+                else:
+                    addArrow((sx,1),(ex, ey))
         else:
-            
             addArrow((sx,sy),(ex,ey))
-
-            #\ if top half of a frommer
-            #/ if bottom half
-            #/ if top half of a toer
-            #\ if bottom half
 
 class TrackMap:
     def __init__(self, filename):
@@ -428,54 +405,122 @@ class TrackMap:
         self.trains = [Train(1, self), Train(2, self)]
 
     def build(self):
+        class switchholder:
+            def __init__(self, b):
+                self.b = b
+                self.froms = []
+                self.tos = []
+        
+        switches = []
         for b in self.blocks:
-            if b.num == 0: 
-                b.setx(10)
-                b.sety(10)
-                b.setcard("left")
-            elif b.num == 1:
-                b.setx(int(self.width*0.75))
-                b.sety(int(self.height*0.5))
-                b.setcard("left")
-            elif b.num == 2:
-                b.setx(int(self.width*0.75))
-                b.sety(int(self.height*0.5)+1)
-                b.setcard("right")
-            else:
-                print(b.directionality)
-                if b.directionality in "+bs":
-                    b0 = self.block(min(b.prev))
-                else:
-                    b0 = self.block(min(b.next))
-                if b0.num == 0: 
-                    b0 = self.block([x for x in b.prev if x != 0][0])
-                
-                print(f"from:{b0.num}")
-                print(f"to{b.num}")
-                
-                if b0.is_main_switch() and len(b0.next) > 1:
-                    if b0.num == b.num - 1:
-                        b.sety(b0.y-1)
-                    else:
-                        b.sety(b0.y+1)
-                        b.isdownward = True
-                else: 
-                    b.sety(b0.y)
-                
-                #
-                #18 17 16 15 <14>< 
-                #                13 <1 <2 <3 <4 <5 <6 <7> <8> <9> <10> <11> <12>
-                #             12>   
-                # 
-                b.setx(b0.x-1) #TODO follow direction of prev
+            if b.is_main_switch(): switches.append(switchholder(b))
 
-                if b.directionality in "+bs":
-                    b.setcard(b0.card)
-                else:
-                    b.setcard("right")
+        #set neighbors
+        for s in switches:
+            for x in [self.block(x) for x in s.b.prev]:
+                done = []
+                while not x.is_main_switch() and x not in done: 
+                    print(f"doing{x.num}")
+                    x = self.block(x.prev[0])
+                    done.append(x)
 
-            for n in b.next: print(str(b.num)+"->"+str(n))
-            print(str(b.num) +":"+str(b.x) + "," + str(b.y) + "|" + b.card)
+                s.froms.append(x.num)
+            for x in [self.block(x) for x in s.b.next]:
+                while not x.is_main_switch(): 
+                    print(f"doing{x.num}")
+                    x = self.block(x.next[0])
+                    if not x: break
+                if x:
+                    s.tos.append(x.num)
+        
+        b = switches[0].b
+        b.setx(15)
+        b.sety(15)
+
+        todo = []
+        done = []
+        todo += switches
+        while len(todo)>0:
+            s = todo.pop(0)
+            done.append(s)
+            sb = s.b
+            for i,x in enumerate(sb.prev):
+                b0 = self.block(x)
+                donex = []
+                while not b0.is_main_switch() and b0 not in donex:
+                    print(f"doing{b0.num}, next:{b0.next}, prev:{b0.prev}")
+                    b0.setx(b.x+1)
+                    if len(sb.prev) > 1:
+                        if i == 0: b0.sety(b.y-1)
+                        else:      b0.sety(b.y+1)
+                    else:          b0.sety(b.y)
+                    donex.append(b0)
+                    b0 = self.block(b0.prev[0])
+                if b0.is_main_switch() and b0 not in done: todo.append(b0)
+            for i,x in enumerate(sb.next):
+                b0 = self.block(x)
+                donex = []
+                while not b0.is_main_switch() and b0 not in donex:
+                    print(f"doing{b0.num}")
+                    b0.setx(b.x-1)
+                    if len(sb.next) > 1:
+                        if i == 0: b0.sety(b.y-1)
+                        else:      b0.sety(b.y+1)
+                    else:          b0.sety(b.y)
+                    b0 = self.block(b0.next[0])
+                if b0.is_main_switch() and b0 not in done: todo.append(b0)
+                
+            
+
+        # for b in self.blocks:
+        #     if b.num == 0: 
+        #         b.setx(10)
+        #         b.sety(10)
+        #         b.setcard("left")
+        #     elif b.num == 1:
+        #         b.setx(int(self.width*0.75))
+        #         b.sety(int(self.height*0.5))
+        #         b.setcard("left")
+        #     elif b.num == 2:
+        #         b.setx(int(self.width*0.75))
+        #         b.sety(int(self.height*0.5)+1)
+        #         b.setcard("right")
+        #     else:
+        #         print(b.directionality)
+        #         if b.directionality in "+bs":
+        #             b0 = self.block(min(b.prev))
+        #         else:
+        #             b0 = self.block(min(b.next))
+        #         if b0.num == 0: 
+        #             b0 = self.block([x for x in b.prev if x != 0][0])
+                
+        #         print(f"from:{b0.num}")
+        #         print(f"to{b.num}")
+                
+        #         if b0.is_main_switch() and len(b0.next) > 1:
+        #             if b0.num == b.num - 1:
+        #                 b.sety(b0.y-1)
+        #             else:
+        #                 b.sety(b0.y+1)
+        #                 b.isdownward = True
+        #         else: 
+        #             b.sety(b0.y)
+                
+        #         #
+        #         #18 17 16 15 <14>< 
+        #         #                13 <1 <2 <3 <4 <5 <6 <7> <8> <9> <10> <11> <12>
+        #         #             12>   
+        #         # 
+        #         b.setx(b0.x-1) #TODO follow direction of prev
+
+        #         if b.directionality in "+bs":
+        #             b.setcard(b0.card)
+        #         else:
+        #             b.setcard("right")
+
+        #     for n in b.next: print(str(b.num)+"->"+str(n))
+        #     print(str(b.num) +":"+str(b.x) + "," + str(b.y) + "|" + b.card)
+        
     
     def block(self, n):
         for b in self.blocks:
@@ -484,7 +529,9 @@ class TrackMap:
         return None
     
     def view(self) -> QGraphicsScene:
+        print("building")
         self.build()
+        print("built")
         
         scene = QGraphicsScene()
         
@@ -608,15 +655,11 @@ class UIControls:
         dir = "Bidirectional" if b.directionality == "b" else b.directionality
         type:str
         if b.type[0] in "nb": type = "Track"
-        if b.is_station() and b.is_main_switch():
-            c = b.cur_switch_option()
-            type = f"{b.station_name()} Station, Ticket Sales: {str(b.tickets)}, {str(b.num_boarding)} boarding, {str(b.num_standing)} standing\nSwitch (Currently {c[0]}→{c[1]})"
-        else:
-            if b.is_switch(): 
-                b0 = self.m.tkm.blocks[int(b.first_switch_option()[0])-1] if b.has_light() else b    
-                chosen = b0.cur_switch_option()
-                type = f"Switch (Currently {chosen[0]}→{chosen[1]})"
-            if b.is_station(): type = f"{b.station_name()} Station, Ticket Sales: {str(b.tickets)}, {str(b.num_boarding)} boarding, {str(b.num_standing)} standing"
+        if b.is_switch(): 
+            b0 = self.m.tkm.blocks[int(b.first_switch_option()[0])-1] if b.has_light() else b    
+            chosen = b0.cur_switch_option()
+            type = f"Switch (Currently {chosen[0]}→{chosen[1]})"
+        if b.is_station(): type = f"{b.type[2:]} Station, Ticket Sales: {str(b.tickets)}, {str(b.num_boarding)} boarding, {str(b.num_standing)} standing"
         if b.is_crossing(): type = "Track Crossing"
         
         self.binfo.setText(f"Directionality: {dir}"
