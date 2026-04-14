@@ -1,0 +1,151 @@
+1,"w1-13;l;b:entering pioneer",s,100,0.5,45
+2,"t,Pioneer,l",-,100,1,45
+3,"b:leaving pioneer for edgebrook",-,100,1.5,45
+4,n,-,100,2,45
+5,n,-,100,3,45
+6,n,-,100,4,45
+7,n,b,100,5,45
+8,"b:entering edgebrook",b,100,0,45
+9,"t,Edgebrook,l",b,100,-5,45
+10,"b:leaving edgebrook for D",b,100,-4.5,45
+11,n,b,100,-4,45
+12,w12-13;l,b,100,-3,45
+13,"w12-13,1-13",b,150,0,70
+14,n,b,150,0,70
+15,"b:entering D",b,150,0,70
+16,"t,D,b",b,150,0,70
+17,"b:leaving D for whited",b,150,0,60
+18,n,b,150,0,60
+19,c,b,150,0,60
+20,n,b,150,0,60
+21,"b:entering whited",b,300,0,70
+22,"t,whited,b",b,300,0,70
+23,"b:leaving whited for south bank",b,300,0,70
+24,n,b,300,0,70
+25,n,b,200,0,70
+26,n,b,100,0,70
+27,n,b,50,0,30
+28,"w28-29,150-28",b,50,0,30
+29,w28-29;l,s,50,0,30
+30,"b:entering south bank",+,50,0,30
+31,"t,south bank,l",+,50,0,30
+32,"b:leaving south bank for central",+,50,0,30
+33,n,+,50,0,30
+34,n,+,50,0,30
+35,n,+,50,0,30
+36,u,+,50,0,30
+37,u,+,50,0,30
+38,"u;b:entering central",+,50,0,30
+39,"u;t,central,r",+,50,0,30
+40,"u;b:leaving central for inglewood",+,50,0,30
+41,u,+,50,0,30
+42,u,+,50,0,30
+43,u,+,50,0,30
+44,u,+,50,0,30
+45,u,+,50,0,30
+46,u,+,50,0,30
+47,"u;b:entering inglewood",+,50,0,30
+48,"u;t,inglewood,r",+,50,0,30
+49,"u;b:leaving inglewood for overbrook",+,50,0,30
+50,u,+,50,0,30
+51,u,+,50,0,30
+52,u,+,50,0,30
+53,u,+,50,0,30
+54,u,+,50,0,30
+55,u,+,50,0,30
+56,"u;b:entering overbrook",+,50,0,30
+57,"u;t,overbrook,r;w57-0,57-58",+,50,0,30
+58,"w57-58;l;b:leaving overbrook to glenbury",s,50,0,30
+59,n,+,50,0,30
+60,n,+,50,0,30
+61,n,+,50,0,30
+62,w62-63;l,s,50,0,30
+63,"w0-63,62-63",+,100,0,70
+64,"b:entering glenbury",+,100,0,70
+65,"t,Glenbury,r",+,200,0,70
+66,"b:leaving glenbury for dormont",+,200,0,70
+67,n,+,100,0,40
+68,n,+,100,0,40
+69,n,+,100,0,40
+70,n,+,100,0,40
+71,n,+,100,0,40
+72,"b:entering Dormont",+,100,0,40
+73,"t,Dormont,r",+,100,0,40
+74,"b:leaving dormont for Mt Lebanon",+,100,0,40
+75,n,+,100,0,40
+76,"w76-77;l;b:entering mt lebanon",s,100,0,40
+77,"w76-77,77-101;t,Mt Lebanon,b",b,300,0,70
+78,"b:leaving Mt Lebanon for poplar",b,300,0,70
+79,n,b,300,0,70
+80,n,b,300,0,70
+81,n,b,300,0,70
+82,n,b,300,0,70
+83,n,b,300,0,70
+84,n,b,300,0,70
+85,"w85-86,100-85",b,300,0,70
+86,w85-86;l,b,100,0,25
+87,"b:entering poplar",b,86.6,0,25
+88,"t,Poplar,l",b,100,0,25
+89,"b:leaving poplar for castle shannon",+,75,-0.5,25
+90,n,+,75,-1,25
+91,n,+,75,-2,25
+92,n,+,75,0,25
+93,n,+,75,2,25
+94,n,+,75,1,25
+95,"b:entering castle shannon",+,75,0.5,25
+96,"t,castle shannon,l",+,75,0,25
+97,"b:leaving castle shannon for dormont II",+,75,0,25
+98,n,+,75,0,25
+99,n,+,75,0,25
+100,w100-85;l,s,75,0,25
+101,"w77-101;l;b:leaving Mt Lebanon for Overbrook II",+,35,0,26
+102,n,+,100,0,28
+103,n,+,100,0,28
+104,"b:entering dormont II",+,80,0,28
+105,"t,Dormont II,r",+,100,0,28
+106,"b:leaving dormont II for glenbury II",+,100,0,28
+107,n,+,90,0,28
+108,c,+,100,0,28
+109,n,+,100,0,28
+110,n,+,100,0,30
+111,n,+,100,0,30
+112,n,+,100,0,30
+113,"b:entering glenbury II",+,100,0,30
+114,"t,glenbury II,r",+,162,0,30
+115,"b:leaving glenbury II for overbrook II",+,100,0,30
+116,n,+,100,0,30
+117,n,+,50,0,15
+118,n,+,50,0,15
+119,n,+,40,0,15
+120,n,+,50,0,15
+121,n,+,50,0,15
+122,"u;b:entering overbrook II",+,50,0,20
+123,"u;t,Overbrook II,r",+,50,0,20
+124,"u;b:leaving overbrook II for inglewood II",+,50,0,20
+125,u,+,50,0,20
+126,u,+,50,0,20
+127,u,+,50,0,20
+128,u,+,50,0,20
+129,u,+,50,0,20
+130,u,+,50,0,20
+131,"u;b:entering inglewood II",+,50,0,20
+132,"u;t,Inglewood II,l",+,50,0,20
+133,"u;b:leaving inglewood II for central II",+,50,0,20
+134,u,+,50,0,20
+135,u,+,50,0,20
+136,u,+,50,0,20
+137,u,+,50,0,20
+138,u,+,50,0,20
+139,u,+,50,0,20
+140,"u;b:entering central II",+,50,0,20
+141,"u;t,Central II,r",+,50,0,20
+142,"u;b:leaving central II for south bank",+,50,0,20
+143,u,+,50,0,20
+144,n,+,50,0,20
+145,n,+,50,0,20
+146,n,+,50,0,20
+147,n,+,50,0,20
+148,n,+,184,0,20
+149,n,+,40,0,20
+150,w150-28;l,s,35,0,20   
+0,y,bid,0,0,0
