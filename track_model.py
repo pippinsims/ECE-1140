@@ -6,10 +6,16 @@ import os
 
 BOXSIZE = 70
 TICKSPEED = 0.1
-WHITPEN = QPen(QColor("white"),2)
-PURPPEN = QPen(QColor("red"),2)
-BLCKPEN = QPen(QColor("black"),2)
+WHITPEN = QPen(QColor("#e5e7eb"), 2)
+PURPPEN = QPen(QColor("#a855f7"), 2)
+BLCKPEN = QPen(QColor("#111827"), 2)
 NONEPEN = QPen(Qt.PenStyle.NoPen) #QPen(QColor("black"),0)
+
+# Track Model dark theme (local styling only)
+TM_BG = QColor("#0b1020")          # window background
+TM_PANEL = QColor("#111827")       # block tile background
+TM_GRID = QColor("#1f2937")        # subtle borders
+TM_TEXT = QColor("#e5e7eb")
 
 def div(x, y):
     return int(x/y)
@@ -46,7 +52,11 @@ class Block:
     def __init__(self, num, type:str, dir, leng, grade, spdlim):
         self.num = int(num)
         self.type = type
-        self.directionality = dir
+        # Normalize directionality values from CSV so routing logic is consistent.
+        _d = str(dir).strip().lower()
+        if _d in ("bid", "bidir", "bidirectional"):
+            _d = "b"
+        self.directionality = _d
         self.grade = float(grade)
         self.is_occupied = False
         self.mylength = float(leng)
@@ -146,12 +156,6 @@ class Block:
             self.num_boarding = 0
             self.num_standing = 0
             self.gentickets()
-
-        print(f"Block {self.num} init!")
-        print(f"next:{self.next}")
-        print(f"prev:{self.prev}")
-        print(f"type:{self.type}")
-        print(f"tokens:{self.tokens()}")
     
     def tokens           (self) -> list[str]: return self.type.split(";")
     def is_switch        (self) -> bool: return len([x for x in self.tokens() if x[0] == "w"]) > 0
@@ -235,11 +239,12 @@ class Block:
         self.num_boarding = random.randint(0,100)
         self.tickets = random.randint(self.num_boarding,100)
         self.num_standing += self.tickets
-        print(f"there were {self.tickets} more sales!")
-        print(f"{self.num_standing} are standing")
+        # print(f"there were {self.tickets} more sales!")
+        # print(f"{self.num_standing} are standing")
     
     def beacondata(self)->str:
-        return self.type[2:] if self.is_beacon() else None
+        # return self.type[2:] if self.is_beacon() else None
+        return [x for x in self.tokens() if x[0] == "b"][0][2:] if self.is_beacon() else None
     
     # def setcard(self, c): self.card = c
     def setx(self, x): self.x = x
@@ -258,6 +263,10 @@ class Train:
         self.speed = 0
         self.num_riding = 0
         self.beacon = ''
+        # Integrated launcher may override command/authority per-train even if
+        # multiple trains share a block (do not rely solely on block fields).
+        self.integrated_cmd_kmh: float | None = None
+        self.integrated_auth_km: float | None = None
 
     def update(self):
         if self.block.nopower: print("NO POWER TO TRAIN!")
@@ -271,17 +280,21 @@ class Train:
         r = random.randint(0, self.num_riding)
         self.num_riding -= r
         self.block.num_standing += r
-        print(f"{r} got off of the train")
-        print(f"{self.block.num_standing} are standing")
+        # print(f"{r} got off of the train")
+        # print(f"{self.block.num_standing} are standing")
 
         self.block.num_standing -= self.block.num_boarding
         self.num_riding += self.block.num_boarding
-        print(f"{self.block.num_boarding} got on the train")
-        print(f"{self.block.num_standing} are standing")
+        # print(f"{self.block.num_boarding} got on the train")
+        # print(f"{self.block.num_standing} are standing")
 
         self.block.gentickets()
 
-        if ui.selectedRect and ui.selectedRect.block == self.block: ui.display_block(self.block)
+        try:
+            if ui.selectedRect and ui.selectedRect.block == self.block:
+                ui.display_block(self.block)
+        except Exception:
+            pass
 
 #TODO test ui should receive the actual output type of the tkc not strings/ints.
 #make TrackMap.build() work for the Green and Red lines
@@ -294,11 +307,21 @@ class TrackRectItem(QGraphicsRectItem):
         self.myy = b.y
         self.is_selected = False
         self.upArrow = []
-        super().__init__(QRectF(b.x*BOXSIZE,b.y*BOXSIZE,BOXSIZE,BOXSIZE))
+        super().__init__(QRectF(b.x * BOXSIZE, b.y * BOXSIZE, BOXSIZE, BOXSIZE))
+        # No tile fill; only show arrows/icons/text.
+        self.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+        self.setPen(QPen(Qt.PenStyle.NoPen))
         
         self.ic1 = scene.addPixmap(QPixmap())
         self.ic2 = scene.addPixmap(QPixmap())
         self.ic3 = scene.addPixmap(QPixmap())
+        # Keep icons above arrows/lines for visibility.
+        try:
+            self.ic1.setZValue(3)
+            self.ic2.setZValue(3)
+            self.ic3.setZValue(3)
+        except Exception:
+            pass
 
         txt = str(b.num)
         if b.is_crossing(): self.ic2 = scene.addPixmap(pixmap('railroad-crossing','white'))
@@ -315,7 +338,8 @@ class TrackRectItem(QGraphicsRectItem):
         text.setFont(QFont("Segoe UI", 12))
         if b.is_main_switch(): text.setPos((b.x+0.5 )*BOXSIZE-div(text.boundingRect().width(),2),  b.y     *BOXSIZE)
         else:                  text.setPos((b.x+0.25)*BOXSIZE-div(text.boundingRect().width(),2), (b.y+0.5)*BOXSIZE)
-        text.setPen(WHITPEN)
+        text.setPen(QPen(TM_TEXT, 1))
+        self.setZValue(0)
 
         # if b.card: 
         self.drawTrack(scene)
@@ -345,7 +369,7 @@ class TrackRectItem(QGraphicsRectItem):
 
     def hoverLeaveEvent(self, event):
         if not self.is_selected:
-            self.setPen(NONEPEN)
+            self.setPen(QPen(Qt.PenStyle.NoPen))
             self.setZValue(0)
 
     def update(self):
@@ -389,7 +413,9 @@ class TrackRectItem(QGraphicsRectItem):
             tip   = QPointF(ex, ey)
             head = QGraphicsPolygonItem(QPolygonF([tip, left, right]))
 
-            head.setBrush(QBrush(QColor("blue")))
+            # Ensure arrows render above the filled block tiles (dark theme).
+            head.setZValue(2)
+            head.setBrush(QBrush(QColor("#60a5fa")))
             head.setPen(WHITPEN)
 
             if downward: self.downArrow.append(head)
@@ -409,6 +435,7 @@ class TrackRectItem(QGraphicsRectItem):
             sx,ex,sy,ey = [d + int(BOXSIZE*i) for d,i in zip([x,x,y,y],[stup[0],etup[0],stup[1],etup[1]])]
             
             line = QGraphicsLineItem(sx,sy,ex,ey)
+            line.setZValue(1)
             line.setPen(WHITPEN)
 
             if downward: self.downArrow.append(line)
@@ -480,9 +507,12 @@ class TrackMap:
             for row in csv.reader(f):
                 csv_table.append(tuple(row[:6]))
         self.blocks = [Block(*b) for b in csv_table]
-        self.trains = [Train(1, self), Train(2, self)]
+        self.trains:list[Train] = []
 
     def build(self):
+        used_xy: set[tuple[int, int]] = set()
+        b1 = self.block(1)
+        base_y = int(getattr(b1, "y", int(self.height * 0.5))) if b1 is not None else int(self.height * 0.5)
         for b in self.blocks:
             if b.num == 0: 
                 b.setx(10)
@@ -494,13 +524,21 @@ class TrackMap:
                 b.setx(int(self.width*0.75))
                 b.sety(int(self.height*0.5)+2)
             else:
-                print(b.directionality)
                 if b.directionality in "+bs": b0 = self.block(min(b.prev))
                 else:                         b0 = self.block(min(b.next))
                 if b0.num == 0:               b0 = self.block([x for x in b.prev if x != 0][0])
+                # Some CSV orderings / directionality choices can reference a neighbor
+                # that hasn't been assigned coordinates yet. Fall back to a safe default
+                # so build never crashes; positions will still be deterministic.
+                if b0 is not None and not hasattr(b0, "y"):
+                    try:
+                        b0.setx(int(self.width * 0.75))
+                        b0.sety(int(self.height * 0.5))
+                    except Exception:
+                        pass
                 
-                print(f"from:{b0.num}")
-                print(f"to{b.num}")
+                # print(f"from:{b0.num}")
+                # print(f"to{b.num}")
                 
                 if b0.is_main_switch() and len(b0.next) > 1:
                     if b.num == b0.top_next():
@@ -523,7 +561,24 @@ class TrackMap:
                 # else:
                 #     b.setcard("right")
 
-            for n in b.next: print(str(b.num)+"->"+str(n))
+            # Ensure 2–12 sit on the intended row (after initial placement).
+            if 2 <= int(b.num) <= 12:
+                b.sety(base_y + 3)
+
+            # Prevent blocks from landing on top of each other.
+            if b.x and b.y:
+                try:
+                    x = int(b.x)
+                    y = int(b.y)
+                except Exception:
+                    x, y = int(b.x), int(b.y)
+                while (x, y) in used_xy:
+                    y += 1
+                b.setx(x)
+                b.sety(y)
+                used_xy.add((x, y))
+
+            # for n in b.next: print(str(b.num)+"->"+str(n))
             # print(str(b.num) +":"+str(b.x) + "," + str(b.y) + "|" + b.card)
     
     def block(self, n):
@@ -536,6 +591,7 @@ class TrackMap:
         self.build()
         
         scene = QGraphicsScene()
+        scene.setBackgroundBrush(QBrush(TM_BG))
         
         self.items: list[TrackRectItem] = []
         for b in self.blocks:
@@ -550,16 +606,19 @@ class TrackMap:
                 scene.addItem(it)
 
         view = QGraphicsView(scene)
+        view.setBackgroundBrush(QBrush(TM_BG))
+        view.setStyleSheet("QGraphicsView { border: 1px solid #374151; }")
         view.setGeometry(0,0,(self.width*BOXSIZE)+100,(self.height*BOXSIZE)+100)
         view.setMaximumSize(view.width(),view.height())
         return view
     
-    def update(self):
+    def update(self, tickrate = TICKSPEED):
+        if tickrate is None: tickrate = TICKSPEED
         for t in self.trains:
             #km/hr * 1hr/3600s * 1000m/1km = 10/36 m/s, and each tick is 0.1s
             if t.speed != 0:
                 old = t.pos_on_b
-                t.pos_on_b += t.speed * (10/36) * TICKSPEED
+                t.pos_on_b += t.speed * (10/36) * tickrate
                 
                 while t.pos_on_b > t.block.mylength or t.pos_on_b < 0:
                     b = t.block
@@ -581,13 +640,14 @@ class TrackMap:
                         if b.prev[0] < b.num:to_b = self.blocks[b.prev[0]-1]
                         else:                to_b = self.blocks[b.next[0]-1]
                         
-                    if b in to_b.next:
+                    # next/prev store block numbers, not Block objects
+                    if int(b.num) in getattr(to_b, "next", []):
                         t.dir = "-"
-                    elif b in to_b.prev:
+                    elif int(b.num) in getattr(to_b, "prev", []):
                         t.dir = "+"
 
-                    print(f"from{b.num}")
-                    print(f"to{to_b.num}")
+                    print(f"traveling from block {b.num}")
+                    print(f"to block {to_b.num}")
 
                     #going forward is defined as getting closer to next
                     if b.directionality in "+b" or b.is_switch(): going_forward = to_b.num in b.next
@@ -606,15 +666,49 @@ class TrackMap:
                         t.pos_on_b = old
                         print(f"train {t.num} CRASH (crossing)")
                         break
-
+                    
                     t.block.deoccupy()
                     t.pos_on_b += t.block.mylength * sign(not going_forward)
                     t.block = to_b
                     t.update()
-            if t in self.trains:
-                t.block.occupy()
+                    
+            if t in self.trains: t.block.occupy()
         
         for it in self.items: it.update()
+
+    def get_train_track_data(self, train_index: int):
+        """Return track data dict for train at train_index (0-based)."""
+        if train_index < 0 or train_index >= len(self.trains):
+            return {}
+        t = self.trains[train_index]
+        b = t.block
+
+        def safe_float(v, default=0.0):
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return default
+
+        cmd_kmh = float(t.integrated_cmd_kmh) if t.integrated_cmd_kmh is not None else safe_float(b.speed)
+        auth_km = float(t.integrated_auth_km) if t.integrated_auth_km is not None else safe_float(b.authority)
+
+        return {
+            "block_num":           int(b.num),
+            "commanded_speed_kmh": cmd_kmh,
+            "authority_km":        auth_km,
+            "track_grade_percent": float(b.grade),
+            "speed_limit_kmh":     float(b.speed_limit),
+            "beacon_data":         t.beacon or "",
+            "rail_broken":         bool(b.brknrail),
+            "circuit_failed":      bool(b.dsrptrck),
+            "power_lost":          bool(b.nopower),
+            "boarding_passengers": int(getattr(b, "num_boarding", 0)) if b.is_station() else 0,
+        }
+
+    def set_train_speed(self, train_index: int, speed_kmh: float):
+        """Feed Train Model velocity back into the track to move trains."""
+        if 0 <= train_index < len(self.trains):
+            self.trains[train_index].speed = float(speed_kmh)
 
 class MainWindow(QWidget):
     def __init__(self, tkm:TrackMap):
@@ -622,7 +716,9 @@ class MainWindow(QWidget):
         self.setWindowTitle("Train Track Model")
         self.setMinimumSize(400,400)
         self.tkm = tkm
-        self.testui = TestUI(self)
+        import tkm_testui as tui
+        self.testui = tui.TestUI(self)
+        self.ui: UIControls = None
 
     def closeEvent(self, a0):
         self.testui.hide()
@@ -630,6 +726,7 @@ class MainWindow(QWidget):
 
 class UIControls:
     def __init__(self, m: MainWindow):
+        global ui; ui = self
         self.controls = QWidget()
         self.selectedRect:TrackRectItem = None
         self.m = m
@@ -639,11 +736,12 @@ class UIControls:
         self.binfo = QLabel("Block info", controls)
         binfo = self.binfo
         binfo.setStyleSheet("""
-            background-color: #555555;
-            border: 1px solid black;
-            padding: 4px;
+            background-color: #0b1020;
+            color: #e5e7eb;
+            border: 1px solid #374151;
+            padding: 6px;
         """)
-        binfo.setGeometry(0,0,500,120)
+        binfo.setGeometry(0,0,500,220)
         binfo.setMaximumSize(binfo.width(),binfo.height())
         binfo.setMinimumSize(binfo.width(),binfo.height())
 
@@ -677,6 +775,8 @@ class UIControls:
         hl.addWidget(tui_btn)
 
     def display_block(self, b:Block):
+        # Always define a default to avoid UnboundLocalError for unexpected values.
+        dir = str(getattr(b, "directionality", "") or "Unknown")
         if b.directionality == "b": dir = "Bidirectional"
         if b.directionality == "+": dir = "Increasing Block Number"
         if b.directionality == "-": dir = "Decreasing Block Number"
@@ -699,13 +799,18 @@ class UIControls:
             if b.is_station(): type = f"{b.station_name()} Station, Ticket Sales: {str(b.tickets)}, {str(b.num_boarding)} boarding, {str(b.num_standing)} standing"
         if b.is_crossing(): type = "Track Crossing"
         
-        self.binfo.setText(f"Directionality: {dir}"
-                           f"\nCommanded Authority: {round(b.authority*0.621371192,1) if b.authority else "0"} mi"
-                           f"\nCommanded Speed: {round(b.speed*0.621371192,1) if b.speed else "0"} mi/hr"
-                           f"\nGrade: {b.grade}%"
-                           f"\nSpeed Limit: {round(b.speed_limit*0.621371192,1) if b.speed_limit else "0"} mi/hr"
-                           f"\nInfrastructure: {type}"
-                           f"\nOccupied: {b.is_occupied}")
+        auth_mi = round(float(b.authority) * 0.621371192, 1) if b.authority else 0
+        spd_mph = round(float(b.speed) * 0.621371192, 1) if b.speed else 0
+        lim_mph = round(float(b.speed_limit) * 0.621371192, 1) if b.speed_limit else 0
+        self.binfo.setText(
+            f"Directionality: {dir}"
+            f"\nCommanded Authority: {auth_mi} mi"
+            f"\nCommanded Speed: {spd_mph} mi/hr"
+            f"\nGrade: {b.grade}%"
+            f"\nSpeed Limit: {lim_mph} mi/hr"
+            f"\nInfrastructure: {type}"
+            f"\nOccupied: {b.is_occupied}"
+        )
     
     def update(self):
         if self.selectedRect: 
@@ -716,190 +821,31 @@ class UIControls:
             self.selectedRect.setPen(PURPPEN)
             self.selectedRect.is_selected = True
         for c in [self.chkbrk,self.chkcirc,self.chkpower]: c.setEnabled(self.selectedRect != None)
-    
-class TestUI(QWidget):
-    def __init__(self, m: MainWindow):
-        super().__init__()
-        
-        self.myscroll = QScrollArea()
-        self.myscroll.setWindowTitle("Test UI")
 
-        self.myscroll.setWidget(self)
-        self.myscroll.setWidgetResizable(True)
-        
-        self.uilayout = QHBoxLayout(self)
+def make_widget() -> MainWindow:
+    tkm = TrackMap("greenline.csv")
+    window = MainWindow(tkm)
+    window.ui = UIControls(window)
 
-        self.inputlayout = QVBoxLayout()
+    layout = QVBoxLayout(window)
+    layout.addWidget(tkm.view())
+    layout.addWidget(window.ui.controls)
 
-        def label(words, layout):
-            lbl = QLabel(words)
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("font-size: 18pt;")
-            layout.addWidget(lbl)
-
-        label("---From Track Controller---", self.inputlayout)
-        for b in m.tkm.blocks: self.addBlockIn(b)
-
-        label("---From Train Model---", self.inputlayout)
-        for t in m.tkm.trains: self.addTrainIn(t)
-
-        self.uilayout.addLayout(self.inputlayout)
-
-        self.outputlayout = QVBoxLayout()
-
-        label("---To Track Controller---", self.outputlayout)
-        self.blocksout = []
-        self.trainsout = []
-        for b in m.tkm.blocks: self.addBlockOut(b)
-
-        label("---To Train Model---", self.outputlayout)
-        for t in m.tkm.trains: self.addTrainOut(t)
-
-        self.uilayout.addLayout(self.outputlayout)
-
-    def blockOut(self, b:Block)->str:
-        return f"\t\t\tBlock {b.num}   \toccupancy:{b.is_occupied}\tswitch state:{b.switch_state if b.is_main_switch() else 'N/A'}\tsignal state:{b.light_state if b.is_branch_switch() else 'N/A'}"
-    
-    def trainOut(self, t:Train)->str:
-        return f"cmd spd:{t.block.speed}   cmd auth:{t.block.authority}   cur grade:{t.block.grade}   cur spd lim:{t.block.speed_limit}   isbrokenrail:{t.block.brknrail}   isbrokentrackcircuit:{t.block.dsrptrck}   hasnopower:{t.block.nopower}   num passengers:{t.block.tickets if t.block.is_station() else 'N/A'}"
-
-    def addTrainOut(self, t):
-        pertrn = QHBoxLayout()
-        lbl = QLabel(self.trainOut(t))
-        lbl.setFont(QFont("Segoe UI", 12))
-        self.trainsout += [(t, lbl)]
-
-        pertrn.addWidget(lbl)
-
-        self.outputlayout.addLayout(pertrn)
-        #TODO decel lim
-        #TODO accel lim
-
-    def addBlockOut(self, b):
-        perblk = QHBoxLayout()
-        lbl = QLabel(self.blockOut(b))
-        lbl.setFont(QFont("Segoe UI", 12))
-        self.blocksout += [(b, lbl)]
-
-        perblk.addWidget(lbl)
-
-        self.outputlayout.addLayout(perblk)
-
-    def addTrainIn(self, t: Train):
-        lbl = QLabel("Train "+str(t.num)+" Speed (km/hr):\t")
-        inp = QLineEdit()
-        btn = QPushButton("Confirm")
-        
-        lbl.setMinimumHeight(30)
-        inp.setMinimumHeight(20)
-        btn.setMinimumHeight(20)
-
-        def confirm():
-            print(f"Train "+str(t.num)+" speed set to:"+inp.text())
-            t.speed = float(inp.text())
-
-        btn.clicked.connect(confirm)
-
-        pertrn = QHBoxLayout()
-        pertrn.addWidget(lbl)
-        pertrn.addWidget(inp)
-        pertrn.addWidget(btn)
-
-        self.inputlayout.addLayout(pertrn)
-
-    def addBlockIn(self, b: Block):
-        swbox:QCheckBox = None
-        switches = []
-        if b.is_main_switch():
-            switches = [b.first_switch_option(),b.second_switch_option()]
-            swbox = QCheckBox(f"Switch {switches[0][0]}-{switches[0][1]}/{switches[1][0]}-{switches[1][1]}")
-            swbox.setMinimumHeight(20)
-        
-        sig: QFormLayout = None
-        sig_ed: QLineEdit
-        if b.has_light():
-            sig_ed = QLineEdit()
-            sig = QFormLayout()
-            sig.addRow("Signal Color:", sig_ed)
-            sig_ed.setMinimumHeight(20)
-
-        crbox:QCheckBox = None
-        if b.is_crossing():
-            crbox = QCheckBox("Crossing Active")
-            crbox.setMinimumHeight(20)
-
-        authlbl = QLabel("Block "+str(b.num) + " Authority, Speed (km, km/hr):\t")
-        inp0 = QLineEdit()
-        inp = QLineEdit()
-        btn = QPushButton("Confirm")
-        
-        authlbl.setMinimumHeight(30)
-        inp0.setMinimumHeight(20)
-        inp.setMinimumHeight(20)
-        btn.setMinimumHeight(20)
-
-        def confirm():
-            print(f"Block {b.num} auth set to:", inp0.text())
-            print(f"Block {b.num} spd set to:", inp.text())
-            b.authority = inp0.text()
-            b.speed = inp.text()
-            if swbox:
-                print(f"Block {b.num} switch set to:", switches[to_int(swbox.isChecked())])
-                b.switch_state = to_int(swbox.isChecked())
-            if crbox:
-                print(f"Block {b.num} crossing set to: ", "Active" if crbox.isChecked() else "Non-active")
-                b.crossing_state = crbox.isChecked() 
-            if sig:
-                print(f"Block {b.num} signal set to: ", sig_ed.text())
-                b.light_state = sig_ed.text()
-
-        btn.clicked.connect(confirm)
-
-        perblk = QHBoxLayout()
-        perblk.addWidget(authlbl)
-        perblk.addWidget(inp0)
-        perblk.addWidget(inp)
-        if swbox: perblk.addWidget(swbox)
-        if crbox: perblk.addWidget(crbox)
-        if sig: perblk.addLayout(sig)
-        perblk.addWidget(btn)
-
-        # this causes perblk to have the same spacing rule as inputlayout, also adds it to inputlayout like a widget
-        self.inputlayout.addLayout(perblk)
-
-    def show(self):
-        self.myscroll.show()
-        return super().show()
-
-    def hide(self):
-        self.myscroll.hide()
-        return super().hide()
-    
-    def update(self):
-        for x in self.blocksout:
-            x[1].setText(self.blockOut(x[0]))
-        for x in self.trainsout:
-            t = x[0]
-            x[1].setText(self.trainOut(x[0]))
+    return window
 
 def main():
     app = QApplication(sys.argv)
 
-    tkm = TrackMap("greenline.csv")
-    window = MainWindow(tkm)
+    widget = make_widget()
+    widget.show()
 
-    global ui; ui = UIControls(window)
-
-    layout = QVBoxLayout(window)
-    layout.addWidget(tkm.view())
-    layout.addWidget(ui.controls)
-
-    window.show()
+    widget.tkm.trains.append(Train(1, widget.tkm))
+    widget.tkm.trains.append(Train(2, widget.tkm))
 
     def tick():
-        tkm.update()
-        ui.update()
-        window.testui.update()
+        widget.tkm.update()
+        widget.ui.update()
+        widget.testui.update()
 
     timer = QTimer()
     timer.timeout.connect(tick)
