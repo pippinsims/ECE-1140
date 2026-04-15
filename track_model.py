@@ -72,15 +72,13 @@ class Block:
         self.isdownward = False
         self.next = []
         self.prev = []
-        
-        t = self.type
 
         #if 3 connections, if missing a neighbor, that is the unknown connection (i think 3way is always missing a neighbor)
         #if 2 connections, the unknown connection is the neighbor on that side (prev <, next >)
         if self.is_switch():
             self.switch_state = 0
             import re
-            a = [int(i) for i in re.findall(r'\d+',t)] #array of all digit sequences in t
+            a = [int(i) for i in re.findall(r'\d+',self.token("w"))] #array of all digit sequences in token
             n = self.num
 
             if len(a) == 2:
@@ -99,6 +97,9 @@ class Block:
                 # one known is a neighbor. x = the other neighbor
                 other_neighbor = n+1 if n-1 in a else n-1
 
+                flip = False
+                flipp = False
+
                 if a[1] == n and a[3] == n:
                     self.prev = remall(n,a)
                     self.next = [other_neighbor]
@@ -107,21 +108,22 @@ class Block:
                     self.prev.append(a[2])
                     if abs(a[1] - n) == 1: 
                         self.prev.append(other_neighbor)
+                        flip = True
                     else:
                         self.next.append(other_neighbor)
+                        flipp = True
                 elif a[1] == n and a[2] == n:
                     self.next.append(a[3])
                     self.prev.append(a[0])
                     if abs(a[3] - n) == 1: 
                         self.prev.append(other_neighbor)
+                        flip = True
                     else:
                         self.next.append(other_neighbor)
+                        flipp = True
                 elif a[0] == n and a[2] == n:
                     self.next = remall(n,a)
                     self.prev = [other_neighbor]
-                
-                # if self.num in [15,10]: self.next = []
-                # if self.num == 1: self.prev = []
                 
                 #
                 #[5,6,5,11]
@@ -136,6 +138,16 @@ class Block:
                 #[self,othr,othr,self]
                 #[othr,self,self,othr]
                 #[othr,self,othr,self]
+            n = self.token("e")
+            if len(n) > 0: 
+                print(f"block{self.num},{self.tokens()}")
+                self.next = [int(x.strip("e")) for x in n.split(",")]
+                if flip: list.reverse(self.next)
+            p = self.token("p")
+            if len(p) > 0:
+                print(f"block{self.num},{self.tokens()}")
+                self.prev = [int(x.strip("p")) for x in p.split(",")]
+                if flipp: list.reverse(self.prev)
         else:
             if self.directionality in "+b":
                 self.prev.append(self.num-1)
@@ -143,9 +155,6 @@ class Block:
             else:
                 self.prev.append(self.num+1)
                 self.next.append(self.num-1)
-
-        #     if self.num != 1: self.prev.append(self.num-1)
-        #     if self.num not in [10, 15]: self.next.append(self.num+1)
         
         if self.has_light(): self.light_state = "green"
             
@@ -158,24 +167,32 @@ class Block:
             self.gentickets()
     
     def tokens           (self) -> list[str]: return self.type.split(";")
-    def is_switch        (self) -> bool: return len([x for x in self.tokens() if x[0] == "w"]) > 0
-    def is_station       (self) -> bool: return len([x for x in self.tokens() if x[0] == "t"]) > 0
-    def is_beacon        (self) -> bool: return len([x for x in self.tokens() if x[0] == "b"]) > 0
+    def is_switch        (self) -> bool: return len(self.token("w")) > 0
+    def is_station       (self) -> bool: return len(self.token("t")) > 0
+    def is_beacon        (self) -> bool: return len(self.token("b")) > 0
     def is_main_switch   (self) -> bool: return self.is_switch() and "l" not in self.tokens()
     def is_branch_switch (self) -> bool: return self.is_switch() and "l" in self.tokens()
     def has_light        (self) -> bool: return self.is_beacon() or self.is_branch_switch()
     def is_crossing      (self) -> bool: return "c" in self.tokens()
     def is_tunnel        (self) -> bool: return "u" in self.tokens()
 
-    def station_name(self) -> str: return [x for x in self.tokens() if x[0] == "t"][0].split(",")[1]
+    def station_name(self) -> str: return self.token("t").split(",")[1]
+
+    def token(self, c:str) -> str: 
+        try: return [x for x in self.tokens() if x[0] == c][0]
+        except: return []
 
     def first_switch_option(self) -> tuple[int,int]: #from,to
-        tok = [x for x in self.tokens() if x[0] == "w"][0][1:]
-        if "," in tok: return tok.split(",")[0].split("-")
-        else: return tok.split("-")
+        def guts():
+            tok = self.token("w")[1:]
+            if "," in tok: return tok.split(",")[0].split("-")
+            else: return tok.split("-")
+        return [int(x) for x in guts()]
     def second_switch_option(self) -> tuple[int,int]: #from,to
-        tok = [x for x in self.tokens() if x[0] == "w"][0][1:]
-        return tok.split(",")[1].split("-")
+        def guts():
+            tok = self.token("w")[1:]
+            return tok.split(",")[1].split("-")
+        return [int(x) for x in guts()]
 
     def cur_switch_option(self):
         return [self.first_switch_option(),self.second_switch_option()][self.switch_state]
@@ -216,20 +233,22 @@ class Block:
 
     def chosen_next(self):
         if len(self.next) > 1:
-            check = [int(x) for x in self.cur_switch_option() if x != str(self.num)][0]
+            check = [x for x in self.cur_switch_option() if x != self.num][0]
             if check in self.next:
                 return check
             else:
-                unwanted = [int(x) for x in self.first_switch_option()+self.second_switch_option() if x != str(self.num) and x != str(check)][0]
+                unwanted = [x for x in self.first_switch_option()+self.second_switch_option() if x != self.num and x != check][0]
                 return [x for x in self.next if x != unwanted][0]
         else:
             return self.next[0]
+
     def chosen_prev(self):
         if len(self.prev) > 1:
-            check = [int(x) for x in self.cur_switch_option() if x != str(self.num)][0]
-            if check in self.prev: return check
+            check = [x for x in self.cur_switch_option() if x != self.num][0]
+            if check in self.prev: 
+                return check
             else:
-                unwanted = [int(x) for x in self.first_switch_option()+self.second_switch_option() if x != str(self.num) and x != str(check)][0]
+                unwanted = [x for x in self.first_switch_option()+self.second_switch_option() if x != self.num and x != check][0]
                 return [x for x in self.prev if x != unwanted][0]
         else:
             return self.prev[0]
@@ -244,7 +263,7 @@ class Block:
     
     def beacondata(self)->str:
         # return self.type[2:] if self.is_beacon() else None
-        return [x for x in self.tokens() if x[0] == "b"][0][2:] if self.is_beacon() else None
+        return self.token("b")[2:] if self.is_beacon() else None
     
     # def setcard(self, c): self.card = c
     def setx(self, x): self.x = x
@@ -475,6 +494,14 @@ class TrackRectItem(QGraphicsRectItem):
                 u,d = self.block.top_prev(),self.block.bot_prev()
                 plus = 0.25
 
+                # if u == self.block.num-1:
+                #     addArrow((sx,sy),(ex, ey))
+                # else:    
+                
+                # if d == self.block.num-1:
+                #     addArrow((sx,sy),(ex, ey),True)
+                # else:
+
             self.upbranchtext = ut = QGraphicsSimpleTextItem(str(u) if u > 0 else "Y", self)
             ut.setFont(QFont("Segoe UI", 12))
             ut.setPos((b.x+0.5+plus)*BOXSIZE-div(ut.boundingRect().width(),2),b.y*BOXSIZE-10)
@@ -510,9 +537,6 @@ class TrackMap:
         self.trains:list[Train] = []
 
     def build(self):
-        used_xy: set[tuple[int, int]] = set()
-        b1 = self.block(1)
-        base_y = int(getattr(b1, "y", int(self.height * 0.5))) if b1 is not None else int(self.height * 0.5)
         for b in self.blocks:
             if b.num == 0: 
                 b.setx(10)
@@ -537,9 +561,6 @@ class TrackMap:
                     except Exception:
                         pass
                 
-                # print(f"from:{b0.num}")
-                # print(f"to{b.num}")
-                
                 if b0.is_main_switch() and len(b0.next) > 1:
                     if b.num == b0.top_next():
                         b.sety(b0.y-1)
@@ -556,30 +577,12 @@ class TrackMap:
                 # 
                 b.setx(b0.x-1) #TODO follow direction of prev
 
-                # if b.directionality in "+bs":
-                #     b.setcard(b0.card)
-                # else:
-                #     b.setcard("right")
-
-            # Ensure 2–12 sit on the intended row (after initial placement).
-            if 2 <= int(b.num) <= 12:
-                b.sety(base_y + 3)
-
-            # Prevent blocks from landing on top of each other.
-            if b.x and b.y:
-                try:
-                    x = int(b.x)
-                    y = int(b.y)
-                except Exception:
-                    x, y = int(b.x), int(b.y)
-                while (x, y) in used_xy:
-                    y += 1
-                b.setx(x)
-                b.sety(y)
-                used_xy.add((x, y))
-
-            # for n in b.next: print(str(b.num)+"->"+str(n))
-            # print(str(b.num) +":"+str(b.x) + "," + str(b.y) + "|" + b.card)
+        print(self.blocks[84].next)
+        print(self.blocks[84].prev)
+        print(self.blocks[76].next)
+        print(self.blocks[76].prev)
+        print(self.blocks[27].next)
+        print(self.blocks[27].prev)
     
     def block(self, n):
         for b in self.blocks:
@@ -623,8 +626,12 @@ class TrackMap:
                 while t.pos_on_b > t.block.mylength or t.pos_on_b < 0:
                     b = t.block
                     if b.is_switch():
-                        if t.dir == "+": c = b.chosen_next()
-                        elif t.dir == "-": c = b.chosen_prev()
+                        if b.directionality == "s": 
+                            k = b.first_switch_option() #must be branch if "s"
+                            if k[0] == b.num: c = k[1]
+                            else:             c = b.num+1 #default for "s" seems to be fine to be "+"
+                        elif t.dir == "+": c = b.chosen_next() #TODO using only this causes 13 to go to 14 even when t.dir=="-"
+                        elif t.dir == "-": c = b.chosen_prev() #TODO this causes 77 to go to 78 when t.dir=="-"
                         if c == 0:
                             self.trains.remove(t)
                             b.deoccupy()
@@ -632,27 +639,26 @@ class TrackMap:
                         else:
                             to_b = self.blocks[c-1]
 
-                    elif b.directionality in "+b":
+                    elif b.directionality == "+":
+                        t.dir = "+"
                         if b.next[0] > b.num:to_b = self.blocks[b.next[0]-1]
                         else:                to_b = self.blocks[b.prev[0]-1]
 
                     elif b.directionality == "-":
+                        t.dir = "-"
                         if b.prev[0] < b.num:to_b = self.blocks[b.prev[0]-1]
                         else:                to_b = self.blocks[b.next[0]-1]
                         
-                    # next/prev store block numbers, not Block objects
-                    if int(b.num) in getattr(to_b, "next", []):
-                        t.dir = "-"
-                    elif int(b.num) in getattr(to_b, "prev", []):
-                        t.dir = "+"
+                    elif b.directionality == "b":
+                        if t.dir == "+": to_b = self.blocks[b.next[0]-1]
+                        else:            to_b = self.blocks[b.prev[0]-1]
+
+                    if to_b.num == b.num-1: t.dir = "-"
 
                     print(f"traveling from block {b.num}")
                     print(f"to block {to_b.num}")
+                    print(f"dir:{t.dir}")
 
-                    #going forward is defined as getting closer to next
-                    if b.directionality in "+b" or b.is_switch(): going_forward = to_b.num in b.next
-                    elif b.directionality == "-":                going_forward = to_b.num in b.prev
-                    
                     if to_b.is_occupied:
                         t.pos_on_b = old
                         print(f"train {t.num} CRASH (occupied block)")
@@ -666,9 +672,13 @@ class TrackMap:
                         t.pos_on_b = old
                         print(f"train {t.num} CRASH (crossing)")
                         break
+
+                    #going forward is defined as getting closer to next
+                    # if b.directionality in "+b" or b.is_switch(): going_forward = to_b.num in b.next
+                    # elif b.directionality == "-":                going_forward = to_b.num in b.prev
                     
                     t.block.deoccupy()
-                    t.pos_on_b += t.block.mylength * sign(not going_forward)
+                    t.pos_on_b -= t.block.mylength #* sign(going_forward)
                     t.block = to_b
                     t.update()
                     
@@ -841,6 +851,10 @@ def main():
 
     widget.tkm.trains.append(Train(1, widget.tkm))
     widget.tkm.trains.append(Train(2, widget.tkm))
+
+    widget.tkm.blocks[12].switch_state = 1
+    widget.tkm.blocks[56].switch_state = 1
+    widget.tkm.blocks[62].switch_state = 1
 
     def tick():
         widget.tkm.update()
