@@ -57,14 +57,12 @@ GREEN_BLOCK_LENGTHS = {
 #   normal  = (next_block, display_label) when switch is in NORMAL position
 #   reverse = (next_block, display_label) when switch is in REVERSE position
 GREEN_SWITCHES = {
-    # NOTE: Hosts below are aligned to the Track Model's "main switch" blocks from greenline.csv
-    # (switch token has two options and does NOT include ";l" branch marker).
-    "SW13": {"host":13, "normal":(12, "13->12"),   "reverse":(1,  "13->1"),    "description":"Main switch at block 13 (to 12 or 1)"},
-    "SW28": {"host":28, "normal":(29, "28->29"),   "reverse":(150,"28->150"),  "description":"Main switch at block 28 (to 29 or 150)"},
-    "SW57": {"host":57, "normal":(58, "57->58"),   "reverse":(0,  "57->Yard"), "description":"Main yard switch at block 57 (to 58 or yard)"},
-    "SW63": {"host":63, "normal":(62, "63->62"),   "reverse":(0,  "63->Yard"), "description":"Main yard switch at block 63 (to 62 or yard)"},
-    "SW77": {"host":77, "normal":(76, "77->76"),   "reverse":(101,"77->101"),  "description":"Main switch at block 77 (to 76 or 101)"},
-    "SW85": {"host":85, "normal":(86, "85->86"),   "reverse":(100,"85->100"),  "description":"Main switch at block 85 (to 86 or 100)"},
+    "SW12": {"host":12, "normal":(13,"12->13"),  "reverse":(1, "1->13"),    "description":"Blocks 1/12 -> 13"},
+    "SW28": {"host":28, "normal":(29,"28->29"),  "reverse":(150,"150->28"), "description":"Blocks 28 / 150"},
+    "SW57": {"host":57, "normal":(58,"57->58(Yard)"), "reverse":(0,"57->Depot"),  "description":"Yard Switch at 57 (enters yard at 58)"},
+    "SW62": {"host":62, "normal":(63,"62->63"),        "reverse":(0,"62->Depot"),  "description":"Yard Switch at 62 (exits yard to 63)"},
+    "SW76": {"host":76, "normal":(77,"76->77"),  "reverse":(101,"77->101"), "description":"Blocks 76->77 / 101"},
+    "SW85": {"host":85, "normal":(86,"85->86"),  "reverse":(100,"100->85"), "description":"Blocks 85 / 100"},
 }
 
 GREEN_CROSSINGS = [19, 108]   # block numbers with railway crossings
@@ -433,47 +431,20 @@ def compute_wayside_outputs(block_state, block_lengths, switches_def,
             switch_states[sw_id] = "normal"
             continue
 
-        # Integrated behavior: choose a deterministic, safe switch position based on
-        # authority reach. If any train is cleared to reach this host block, prefer
-        # the branch whose *next* block is within that authority reach.
-        #
-        # This avoids relying on block-number ordering (which is not monotonic due to
-        # yard/loop routing), and matches the idea "route toward cleared territory".
-        chosen = "normal"
-        try:
-            host_in_reach = (host in all_reach)
-        except Exception:
-            host_in_reach = False
+        # Skip reverse routing for one-way exit switches whose reverse branch
+        # points backward (rev_blk <= host) or is a self-loop (rev_blk == host).
+        # These are yard-exit style switches (e.g. SW62) where there is no
+        # meaningful alternate forward route — always keep them normal.
+        if rev_blk <= host:
+            switch_states[sw_id] = "normal"
+            continue
 
-        if host_in_reach:
-            try:
-                n = int(norm_blk)
-            except Exception:
-                n = 0
-            try:
-                r = int(rev_blk)
-            except Exception:
-                r = 0
-
-            def _score(next_blk: int) -> int:
-                if next_blk <= 0:
-                    return -10_000
-                if next_blk in occupied:
-                    return -1_000  # don't route into an occupied branch if avoidable
-                return 10 if next_blk in all_reach else 0
-
-            sn = _score(n)
-            sr = _score(r)
-            if sr > sn:
-                chosen = "reverse"
-            else:
-                chosen = "normal"
-
-        # Legacy merge heuristic as a final tie-breaker.
-        if chosen == "normal" and (rev_blk in occupied and norm_blk not in occupied):
-            chosen = "reverse"
-
-        switch_states[sw_id] = chosen
+        # Reverse only to let a merging train through; normal in all other cases
+        # (covers: nobody on either branch, both branches occupied, only normal occupied)
+        if rev_blk in occupied and norm_blk not in occupied:
+            switch_states[sw_id] = "reverse"
+        else:
+            switch_states[sw_id] = "normal"
 
     # -- Crossing logic -------------------------------------------------------
     crossing_states = {}
@@ -523,7 +494,7 @@ C = {
     "muted":   "#8899aa",
     "reach":   "#1d4e6b",
     "divider": "#1e2d45",
-    "occupied":"#2e3f5c",
+    "occupied":"#7c2d00",
 }
 
 SIG_COLOR = {"green": C["green"], "yellow": C["yellow"], "red": C["red"]}
@@ -978,9 +949,11 @@ class WaysideFrame(tk.Frame):
 
             # block_vars stores tk vars (UI uses imperial; logic uses metric via conversion)
             ws["block_vars"][blk] = {
-                "occupied":  occ_var,
-                "cmd_speed": speed_var,   # mph in UI
-                "authority": auth_var,    # miles in UI
+                "occupied":       occ_var,
+                "cmd_speed":      speed_var,   # mph in UI
+                "authority":      auth_var,    # miles in UI
+                "row":            row,
+                "row_default_bg": row_bg,
             }
 
     # =========================================================================
@@ -1037,7 +1010,7 @@ class WaysideFrame(tk.Frame):
         # -- Signal grid ------------------------------------------------------
         sig_card = self._card(
             parent,
-            "Signal States  (dot colour = signal  |  blue bg = within authority reach)"
+            "Signal States  (dot colour = signal)"
         )
         grid = tk.Frame(sig_card, bg=C["card"])
         grid.pack(fill="both", expand=True, padx=4, pady=4)
@@ -1113,8 +1086,7 @@ class WaysideFrame(tk.Frame):
                          (" Yellow=caution", C["yellow"]),
                          (" Red=stop",       C["red"]),
                          (" -No signal",     C["muted"]),
-                         (" Occupied",       C["occupied"]),
-                         (" Blue=authority", C["reach"])]:
+                         (" Occupied",       C["occupied"])]:
             tk.Label(leg, text=txt,
                      font=("Helvetica", 8),
                      bg=C["bg"], fg=col).pack(side="left")
@@ -1167,10 +1139,27 @@ class WaysideFrame(tk.Frame):
                 ws.get("signal_blocks"),
             )
 
-            all_reach     = (set().union(*result["reach"].values())
-                             if result["reach"] else set())
             occupied_blks = {b for b, s in block_state.items() if s["occupied"]}
             in_maint      = ws["maintenance"]
+
+            # -- Recolor input rows when occupancy changes --------------------
+            if not hasattr(self, "_row_cache"):
+                self._row_cache = {}
+            for blk, bvars in ws["block_vars"].items():
+                is_occ    = blk in occupied_blks
+                cache_key = (wid, blk)
+                if self._row_cache.get(cache_key) == is_occ:
+                    continue
+                self._row_cache[cache_key] = is_occ
+                row_widget = bvars.get("row")
+                new_bg     = C["occupied"] if is_occ else bvars.get("row_default_bg", C["panel"])
+                if row_widget:
+                    row_widget.config(bg=new_bg)
+                    for child in row_widget.winfo_children():
+                        try:
+                            child.config(bg=new_bg)
+                        except tk.TclError:
+                            pass
 
             # -- Update switch labels (only on change) ------------------------
             for sw_id, computed_pos in result["switches"].items():
@@ -1204,10 +1193,8 @@ class WaysideFrame(tk.Frame):
                 # Determine desired background
                 if is_occ:
                     bg = C["occupied"]
-                elif in_maint:
-                    bg = C["bg"]
                 else:
-                    bg = C["reach"] if blk in all_reach else C["bg"]
+                    bg = C["bg"]
 
                 # Determine desired dot appearance
                 if computed_sig is None:

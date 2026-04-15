@@ -371,6 +371,13 @@ class TrainControllerApp:
 
         # ── doors ──
         self._sync_doors()
+        # Driver should not interact with doors in Auto.
+        try:
+            door_state = "disabled" if t.automatic_mode else "normal"
+            self.left_door_btn.config(state=door_state)
+            self.right_door_btn.config(state=door_state)
+        except Exception:
+            pass
 
         # ── lights ──
         self._sync_lights()
@@ -601,20 +608,21 @@ class TrainControllerApp:
         section_title(parent, "Driver Outputs Display")
         out_card = tk.Frame(parent, bg=C["bg_card"], pady=10)
         out_card.pack(fill=tk.X, padx=4)
-        out_grid = tk.Frame(out_card, bg=C["bg_card"]); out_grid.pack(padx=10, pady=6)
+        out_grid = tk.Frame(out_card, bg=C["bg_card"])
+        out_grid.pack(fill=tk.X, expand=True, padx=10, pady=6)
 
         def _out_row(row, label, label_bg, attr, unit=""):
             lf = tk.Frame(out_grid, bg=label_bg, padx=10, pady=8)
             lf.grid(row=row, column=0, padx=6, pady=5, sticky="ew")
             tk.Label(lf, text=label, bg=label_bg, fg="white",
-                     font=("Courier", 13, "bold"), width=14,
+                     font=("Courier", 13, "bold"),
                      anchor="center").pack()
             val_f = tk.Frame(out_grid, bg=C["bg_dark"], padx=4, pady=4)
             val_f.grid(row=row, column=1, padx=6, pady=5, sticky="ew")
             val_lbl = tk.Label(val_f, text="–", bg="#0a0000", fg=C["text_lcd"],
-                                font=("Courier", 18, "bold"), width=14,
+                                font=("Courier", 18, "bold"),
                                 anchor="e", padx=10)
-            val_lbl.pack()
+            val_lbl.pack(fill=tk.X, expand=True)
             tk.Label(out_grid, text=unit, bg=C["bg_card"],
                      fg=C["text_dim"], font=("Courier", 10)
                      ).grid(row=row, column=2, padx=4)
@@ -629,8 +637,9 @@ class TrainControllerApp:
         _out_row(6, "Passengers",     "#003050",  "disp_passengers",  "pax")
         _out_row(7, "Next Station",   "#1a1a3a",  "disp_next_station","")
         _out_row(8, "Power Command",  "#003a00",  "disp_power",       "W")
-        out_grid.columnconfigure(0, weight=1)
-        out_grid.columnconfigure(1, weight=1)
+        out_grid.columnconfigure(0, weight=1, uniform="out")
+        out_grid.columnconfigure(1, weight=2, uniform="out")
+        out_grid.columnconfigure(2, weight=0)
 
         # fault indicators
         section_title(parent, "Fault Indicators")
@@ -989,6 +998,31 @@ class TrainControllerApp:
         DOOR  = {0:"Closed",1:"Right",2:"Left",3:"Both"}
         light = ("External" if t.headlights else
                  ("Internal" if t.interior_lights else "Off"))
+
+        # Auto door behavior:
+        # - In Auto, driver cannot interact with doors (disable buttons).
+        # - When stopped at a station, doors open; when departing, doors close.
+        try:
+            door_state = "disabled" if t.automatic_mode else "normal"
+            self.left_door_btn.config(state=door_state)
+            self.right_door_btn.config(state=door_state)
+        except Exception:
+            pass
+
+        if t.automatic_mode:
+            try:
+                stopped = float(getattr(t, "current_speed", 0.0)) <= 0.1
+            except Exception:
+                stopped = False
+            station = str(getattr(t, "next_station", "") or "").strip()
+            at_station = stopped and station and station.upper() not in ("—", "YARD")
+            if at_station:
+                self.left_door_open[idx] = True
+                self.right_door_open[idx] = True
+            else:
+                # Leaving station (or not at one): keep closed in Auto.
+                self.left_door_open[idx] = False
+                self.right_door_open[idx] = False
 
         self.disp_actual_spd.config(text=f"{t.current_speed:.1f}")
         self.disp_cmd_spd.config(text=f"{t.commanded_speed:.1f}")

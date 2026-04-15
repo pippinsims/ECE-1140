@@ -213,11 +213,11 @@ class WaysideDashboard(tk.Tk):
 
         rg_card = self._map_card(outer, "RED & GREEN LINE", C["green"])
         rg_card.pack(side="left", fill="both", expand=True)
-        rg_path = os.path.join(script_dir, "assets/Picture1.png")
+        rg_path = os.path.join(script_dir, "Picture1.png")
         if PIL_AVAILABLE and os.path.exists(rg_path):
             self._load_map_image(rg_card, rg_path, key="rg")
         else:
-            self._map_fallback(rg_card, "assets/Picture1.png")
+            self._map_fallback(rg_card, "Picture1.png")
 
 
 
@@ -1124,23 +1124,9 @@ def _wd_poll_shared_state(self):
         cf._refresh()
 
     # ── Wayside outputs -> CTC ────────────────────────────────────────────────
-    # print(self._controller_frame)
-    #TODO this controller frame is never being set or whatever
     if self._controller_frame is not None:
         cf = self._controller_frame
         inv_sig = {v: k for k, v in SIG_COLOR.items()}
-
-        def _mph_to_kmh(mph: float) -> float:
-            try:
-                return float(mph) * 1.609344
-            except Exception:
-                return 0.0
-
-        def _miles_to_km(mi: float) -> float:
-            try:
-                return float(mi) * 1.609344
-            except Exception:
-                return 0.0
 
         outputs_by_line = {}
         prev_switches = getattr(self, "_prev_switch_states", {})
@@ -1149,7 +1135,7 @@ def _wd_poll_shared_state(self):
         for wid, ws in cf.waysides.items():
             line = ws.get("line", "")
             if line not in outputs_by_line:
-                outputs_by_line[line] = {"signals": {}, "switches": {}, "crossings": {}, "blocks": {}}
+                outputs_by_line[line] = {"signals": {}, "switches": {}, "crossings": {}}
 
             # Signals
             for blk, entry in ws.get("sig_labels", {}).items():
@@ -1178,102 +1164,11 @@ def _wd_poll_shared_state(self):
                 state = "active" if lbl.cget("text") == "ACTIVE" else "inactive"
                 outputs_by_line[line]["crossings"][cx] = state
 
-            # Block commanded speed / authority (track controller → track model)
-            # Note: ws["block_vars"] stores tk variables in imperial (mph, miles).
-            for blk, bvars in ws.get("block_vars", {}).items():
-                try:
-                    spd_mph = float(bvars["cmd_speed"].get())
-                except Exception:
-                    spd_mph = 0.0
-                try:
-                    auth_mi = float(bvars["authority"].get())
-                except Exception:
-                    auth_mi = 0.0
-                outputs_by_line[line]["blocks"][blk] = {
-                    "cmd_speed": _mph_to_kmh(spd_mph),
-                    "authority": _miles_to_km(auth_mi),
-                }
-
         # Save switch state snapshot for next cycle's delta detection
         self._prev_switch_states = {**prev_switches, **new_prev}
 
         for line_name, outputs in outputs_by_line.items():
-            print("wayside push!")
             self._shared.push_wayside_outputs(line_name, outputs)
-    else:
-        # No controller window open: still compute/push default wayside outputs so
-        # the integrated launcher can sync switch states into the Track Model.
-        #
-        # IMPORTANT (integration): only push switch states on DISPATCH events
-        # (when the number of occupied blocks increases), not continuously as
-        # trains move.
-        try:
-            from wayside_controller import (
-                compute_wayside_outputs,
-                GREEN_BLOCK_LENGTHS,
-                RED_BLOCK_LENGTHS,
-                GREEN_SWITCHES,
-                RED_SWITCHES,
-                GREEN_CROSSINGS,
-                RED_CROSSINGS,
-            )
-
-            def _full_blocks_payload(block_state: dict) -> dict:
-                # block_state is metric; forward metric cmd/auth per block.
-                out = {}
-                for blk, st in (block_state or {}).items():
-                    try:
-                        bn = int(blk)
-                    except Exception:
-                        continue
-                    out[bn] = {
-                        "cmd_speed": float(st.get("cmd_speed", 0.0)),
-                        "authority": float(st.get("authority", 0.0)),
-                    }
-                return out
-
-            green_state = self._shared.get_ctc_block_data("Green") if self._shared is not None else {}
-            red_state   = self._shared.get_ctc_block_data("Red")   if self._shared is not None else {}
-
-            def _occ_count(block_state: dict) -> int:
-                try:
-                    return sum(1 for _b, st in (block_state or {}).items() if bool(st.get("occupied", False)))
-                except Exception:
-                    return 0
-
-            if not hasattr(self, "_integrated_last_occ_count"):
-                self._integrated_last_occ_count = {"Green": 0, "Red": 0}
-
-            g_occ = _occ_count(green_state)
-            r_occ = _occ_count(red_state)
-            last_g = int(self._integrated_last_occ_count.get("Green", 0))
-            last_r = int(self._integrated_last_occ_count.get("Red", 0))
-            self._integrated_last_occ_count["Green"] = g_occ
-            self._integrated_last_occ_count["Red"] = r_occ
-
-            # Only compute/push when occupancy count increases (dispatch).
-            if not (g_occ > last_g or r_occ > last_r):
-                return
-
-            # Note: this project version does not expose GREEN_SIGNAL_BLOCKS/RED_SIGNAL_BLOCKS,
-            # so compute signals for all blocks (signal_blocks=None).
-            g_out = compute_wayside_outputs(green_state, GREEN_BLOCK_LENGTHS, GREEN_SWITCHES, GREEN_CROSSINGS, signal_blocks=None)
-            r_out = compute_wayside_outputs(red_state,   RED_BLOCK_LENGTHS,   RED_SWITCHES,   RED_CROSSINGS,   signal_blocks=None)
-
-            self._shared.push_wayside_outputs("Green", {
-                "signals":   dict(g_out.get("signals", {})),
-                "switches":  dict(g_out.get("switches", {})),
-                "crossings": dict(g_out.get("crossings", {})),
-                "blocks":    _full_blocks_payload(green_state),
-            })
-            self._shared.push_wayside_outputs("Red", {
-                "signals":   dict(r_out.get("signals", {})),
-                "switches":  dict(r_out.get("switches", {})),
-                "crossings": dict(r_out.get("crossings", {})),
-                "blocks":    _full_blocks_payload(red_state),
-            })
-        except Exception:
-            pass
 
     # Reschedule
     self.after(100, self._poll_shared_state)

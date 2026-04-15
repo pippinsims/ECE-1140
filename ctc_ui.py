@@ -66,7 +66,7 @@ for _t, _sec, _blk, _st in DEFAULT_GREEN_WAYPOINTS:
         GREEN_STATION_TO_START[_st] = (_sec, _blk)
 
 # "Yard" is treated as the beginning of the Green line run.
-GREEN_STATION_TO_START["Yard"] = ("J", 57)  # Yard switch at block 57 (Section J)
+GREEN_STATION_TO_START["Yard"] = ("J", 58)  # Yard entry at block 58 (Section J)
 
 # Red Line station -> (section, block) start positions
 RED_STATION_TO_START = {
@@ -172,6 +172,25 @@ RED_LINE_BLOCKS = {
     "S": [(73, 50,  0.0, 55), (74, 50, 0.0, 55), (75, 50, 0.0, 55)],
     "T": [(76, 50,  0.0, 55)],
 }
+
+# ---------------------------------------------------------------------------
+# Flat block lookup: block_num -> (section, length_m, speed_kmh)
+# Built once at import time from the section dicts above.
+# Used by the train advancement logic in _advance_external_trains.
+# ---------------------------------------------------------------------------
+_GREEN_BLOCK_INFO: dict[int, tuple[str, float, float]] = {}
+for _sec, _blks in GREEN_LINE_BLOCKS.items():
+    for _bn, _len, _grade, _spd in _blks:
+        _GREEN_BLOCK_INFO[_bn] = (_sec, float(_len), float(_spd))
+
+_RED_BLOCK_INFO: dict[int, tuple[str, float, float]] = {}
+for _sec, _blks in RED_LINE_BLOCKS.items():
+    for _bn, _len, _grade, _spd in _blks:
+        _RED_BLOCK_INFO[_bn] = (_sec, float(_len), float(_spd))
+
+# Maximum block numbers on each line (used to clamp advancement)
+_GREEN_MAX_BLOCK = max(_GREEN_BLOCK_INFO.keys())  # 150
+_RED_MAX_BLOCK   = max(_RED_BLOCK_INFO.keys())    # 76
 
 # Blocks that have a switch: (section, block_num) -> list of "A → B" option strings
 # From default Green Line block info (Infrastructure column)
@@ -1657,6 +1676,9 @@ class MainWindow(QMainWindow):
             self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
             return
 
+        line_short = self.dispatch_line_combo.currentText()   # "Green" or "Red"
+        line       = f"{line_short} Line"
+
         # Block number is the part before " (" (or the whole string if no station name)
         origin_text = self.origin_combo.currentText().split(" (")[0].strip()
         dest_text   = self.dest_combo.currentText().split(" (")[0].strip()
@@ -1680,8 +1702,7 @@ class MainWindow(QMainWindow):
             return
 
         # Find section for the origin block
-        line_str = self.dispatch_line_combo.currentText()   # "Green" or "Red"
-        data_src = GREEN_LINE_BLOCKS if line_str == "Green" else RED_LINE_BLOCKS
+        data_src = GREEN_LINE_BLOCKS if line_short == "Green" else RED_LINE_BLOCKS
         section  = next(
             (sec for sec, blks in data_src.items()
              if any(b[0] == origin_block for b in blks)),
@@ -1689,24 +1710,24 @@ class MainWindow(QMainWindow):
         )
 
         # Station name labels for the confirmation message
-        stn_map    = GREEN_BLOCK_STATIONS if line_str == "Green" else RED_BLOCK_STATIONS
+        stn_map    = GREEN_BLOCK_STATIONS if line_short == "Green" else RED_BLOCK_STATIONS
         origin_lbl = stn_map.get(origin_block, f"Block {origin_block}")
         dest_lbl   = stn_map.get(dest_block,   f"Block {dest_block}")
 
         self._manual_train_counter += 1
-        train_id = f"Manual-{line_str}-{self._manual_train_counter}"
+        train_id = f"Manual-{line_short}-{self._manual_train_counter}"
         self._external_trains[train_id] = {
-            "line"      : line_str + " Line",
-            "section"   : section,
-            "block"     : origin_block,
-            "origin"    : origin_lbl,
-            "dest"      : dest_lbl,
+            "line":       line,
+            "section":    section,
+            "block":      origin_block,
+            "origin":     origin_lbl,
+            "dest":       dest_lbl,
             "dest_block": dest_block,
-            "arrival"   : time_str,
+            "arrival":    time_str,
         }
         self._poll_active_trains()
         self.info_msg.setText(
-            f"{line_str} Line train dispatched: {origin_lbl} → {dest_lbl}. "
+            f"{line_short} Line train dispatched: {origin_lbl} → {dest_lbl}. "
             f"Sec {section}, Blk {origin_block}. Arrival at {time_str}."
         )
         self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
@@ -1742,12 +1763,16 @@ class MainWindow(QMainWindow):
             self._poll_active_trains()
 
     def _poll_active_trains(self):
-        """Called every second. Advances the simulation clock and refreshes the table."""
+        """Called every 100 ms. Advances the simulation clock and refreshes the table."""
         # launch_system.py advances the clock in its own timer; avoid double-counting.
         if getattr(self, "_sim_running", False) and not getattr(
             self, "_integrated_sim_clock_from_launcher", False
         ):
             self._sim_time_sec += self.speed_slider.value()
+
+        # Advance manually-dispatched train positions along the track.
+        # This is a no-op when launch_system is driving positions via the track model.
+        self._advance_external_trains()
 
         trains = []
         # Integrated launcher uses 3 physical trains only; skip T-01…T-10 so the
@@ -1926,6 +1951,113 @@ if __name__ == "__main__":
 # so that the original class definition above stays unmodified.
 # =============================================================================
 
+def _mw_advance_external_trains(self) -> None:
+    """
+    Advance manually-dispatched trains (entries in _external_trains whose key
+    starts with 'Manual-' or 'Train-' but are NOT being driven by launch_system's
+    track model) one simulation step forward along the track.
+
+    Called at the top of _poll_active_trains every 100 ms tick.
+
+    Skipped entirely when launch_system is managing positions, because that path
+    overwrites _external_trains[Train-*].block directly from the track model.
+
+    Physics
+    -------
+    Each train stores `dist_in_block_m` (metres travelled inside the current
+    block) in its _external_trains entry.  Each tick we add:
+
+        Δd = speed_kmh * (slider / 10.0) * TICK_WALL_SEC * (1000 / 3600)
+             = speed_kmh * (slider / 10.0) * (100 / 3600)   # m per 100 ms tick
+
+    When Δd pushes the train past the end of the current block it steps to
+    block+1 (simple sequential routing, no switch awareness) and carries the
+    remainder forward.  Stops at dest_block.
+    """
+    # When launch_system drives train positions, skip this entirely.
+    if getattr(self, "_integrated_sim_clock_from_launcher", False):
+        return
+
+    try:
+        slider = float(self.speed_slider.value())
+    except Exception:
+        slider = 10.0
+    slider = max(1.0, min(100.0, slider))
+
+    # Wall-clock seconds per tick × speed multiplier factor.
+    # Slider value 10 = real time (100 ms tick = 0.1 s wall = 0.1 sim-sec at 1× speed).
+    # The schedule increments _sim_time_sec by `slider` per tick, meaning at slider=10
+    # one tick represents 10 sim-seconds (100× real time). We match that.
+    TICK_WALL_SEC = 0.1          # timer interval in seconds
+    sim_seconds_per_tick = slider   # same rate the schedule uses
+
+    for tid, info in list(getattr(self, "_external_trains", {}).items()):
+        # Only advance entries that were created by manual dispatch or that are
+        # Train-* entries without a live track-model object driving them.
+        # We detect "live" Train-* entries by checking if launch_system populated
+        # them this tick (handled by the guard above).
+
+        dest_block = info.get("dest_block")
+        if dest_block is None:
+            continue  # no destination set, nothing to move toward
+
+        line_full = info.get("line", "")
+        if "Green" in line_full:
+            block_info = _GREEN_BLOCK_INFO
+            max_block  = _GREEN_MAX_BLOCK
+        elif "Red" in line_full:
+            block_info = _RED_BLOCK_INFO
+            max_block  = _RED_MAX_BLOCK
+        else:
+            continue
+
+        try:
+            cur_block = int(info["block"])
+        except (KeyError, ValueError, TypeError):
+            continue
+
+        dest_block = int(dest_block)
+
+        # Already at or past destination — don't move further.
+        if cur_block >= dest_block:
+            info["block"] = dest_block
+            sec, _, _ = block_info.get(dest_block, (info.get("section", "A"), 50, 0))
+            info["section"] = sec
+            continue
+
+        # Get current block properties.
+        sec, length_m, speed_kmh = block_info.get(
+            cur_block, (info.get("section", "A"), 50.0, 30.0))
+
+        if speed_kmh <= 0:
+            speed_kmh = 30.0
+
+        # Distance to advance this tick (metres).
+        # speed in km/h → m/s = speed * 1000/3600; × sim_seconds_per_tick
+        delta_m = speed_kmh * (1000.0 / 3600.0) * sim_seconds_per_tick
+
+        dist = info.get("dist_in_block_m", 0.0) + delta_m
+
+        # Step through blocks until distance budget is consumed or dest reached.
+        while dist >= length_m and cur_block < dest_block:
+            dist -= length_m
+            cur_block = min(cur_block + 1, max_block)
+            sec, length_m, speed_kmh = block_info.get(
+                cur_block, (sec, 50.0, 30.0))
+            if speed_kmh <= 0:
+                speed_kmh = 30.0
+
+        # Clamp to destination.
+        if cur_block >= dest_block:
+            cur_block = dest_block
+            dist = 0.0
+            sec, _, _ = block_info.get(dest_block, (sec, 50.0, 30.0))
+
+        info["block"]           = cur_block
+        info["section"]         = sec
+        info["dist_in_block_m"] = dist
+
+
 def _mw_push_block_data_to_wayside(self, line: str, block_data: dict) -> None:
     """Push CTC block data into SharedState for the Wayside to consume."""
     if self._shared is not None:
@@ -1976,30 +2108,45 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
     green_data: dict = {}
     red_data:   dict = {}
 
-    # CTC → wayside/track-controller contract: provide cmd_speed + authority per block.
-    # Previously this only sent occupied blocks, which caused every other block to read
-    # cmd_speed=0/authority=0 downstream. Build a full snapshot for each line.
-    def _full_snapshot(line_blocks: dict) -> dict:
-        snap: dict = {}
-        for _sec, blks in (line_blocks or {}).items():
-            for info in blks:
-                try:
-                    bn = int(info[0])
-                except Exception:
-                    continue
-                try:
-                    cmd = float(info[3])
-                except Exception:
-                    cmd = 0.0
-                try:
-                    auth_km = float(info[1]) / 1000.0
-                except Exception:
-                    auth_km = 0.0
-                snap[bn] = {"occupied": False, "cmd_speed": cmd, "authority": auth_km}
-        return snap
+    # Build a reverse map from train_id -> dest_block for external trains so
+    # we can compute destination-based authority.
+    ext = getattr(self, "_external_trains", {}) or {}
+    # Key: (line_short, block_num) -> dest_block  (best-effort, may be None)
+    _dest_lookup: dict = {}
+    for tid, tinfo in ext.items():
+        db = tinfo.get("dest_block")
+        if db is None:
+            continue
+        line_full = tinfo.get("line", "")
+        ls = "Green" if "Green" in line_full else ("Red" if "Red" in line_full else None)
+        if ls:
+            try:
+                _dest_lookup[(ls, int(tinfo.get("block", -1)))] = int(db)
+            except (TypeError, ValueError):
+                pass
 
-    green_data = _full_snapshot(GREEN_LINE_BLOCKS)
-    red_data   = _full_snapshot(RED_LINE_BLOCKS)
+    def _authority_km(line_short: str, cur_bn: int) -> float:
+        """
+        Sum block lengths from cur_bn up to dest_block (inclusive of cur_bn).
+        Returns 0.0 when the train is already at its destination.
+        Falls back to a single block's length if no destination is known.
+        """
+        block_info = _GREEN_BLOCK_INFO if line_short == "Green" else _RED_BLOCK_INFO
+        dest = _dest_lookup.get((line_short, cur_bn))
+        if dest is None:
+            # No destination known: authority = just current block
+            _, length_m, _ = block_info.get(cur_bn, ("", 50.0, 0.0))
+            return length_m / 1000.0
+        if dest <= cur_bn:
+            # Already at or past destination: no further authority
+            return 0.0
+        # Accumulate lengths from cur_bn to dest (inclusive)
+        total_m = 0.0
+        max_b = max(block_info.keys()) if block_info else cur_bn
+        for b in range(cur_bn, min(dest, max_b) + 1):
+            _, blen, _ = block_info.get(b, ("", 50.0, 0.0))
+            total_m += blen
+        return total_m / 1000.0
 
     for t in trains:
         line_short = t.get("line", "")
@@ -2011,17 +2158,20 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
         bn = int(m.group(1))
 
         if line_short == "Green":
-            target = green_data
+            block_info, target = _GREEN_BLOCK_INFO, green_data
         elif line_short == "Red":
-            target = red_data
+            block_info, target = _RED_BLOCK_INFO, red_data
         else:
             continue
 
-        # Mark occupied, keep cmd/auth already populated from layout snapshot.
-        if bn not in target:
-            target[bn] = {"occupied": True, "cmd_speed": 0.0, "authority": 0.0}
-        else:
-            target[bn]["occupied"] = True
+        _, length_m, speed_kmh = block_info.get(bn, ("", 50.0, 30.0))
+        authority_km = _authority_km(line_short, bn)
+
+        target[bn] = {
+            "occupied":  True,
+            "cmd_speed": speed_kmh,
+            "authority": authority_km,
+        }
 
     # Always push both lines (possibly empty). Otherwise wayside keeps stale
     # occupancy for blocks that are no longer in this snapshot, and an empty
@@ -2127,9 +2277,10 @@ def _block_to_station(line: str, block: int) -> str:
 
 
 # Monkey-patch the new methods onto MainWindow
-MainWindow.push_block_data_to_wayside = _mw_push_block_data_to_wayside
-MainWindow._poll_wayside_outputs       = _mw_poll_wayside_outputs
-MainWindow._build_ctc_block_state      = _mw_build_ctc_block_state
+MainWindow.push_block_data_to_wayside  = _mw_push_block_data_to_wayside
+MainWindow._poll_wayside_outputs        = _mw_poll_wayside_outputs
+MainWindow._build_ctc_block_state       = _mw_build_ctc_block_state
+MainWindow._advance_external_trains     = _mw_advance_external_trains
 
 # =============================================================================
 # Override + switch-event wiring – appended by merger (round 2)

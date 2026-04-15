@@ -416,40 +416,13 @@ def main() -> None:
             t.block = track_map.block(b_id)
             track_map.trains.append(t)
 
-            # Push occupancy/cmd/auth snapshot to SharedState ONCE per dispatch so
-            # the wayside computes and publishes switch states for the new train.
-            try:
-                occupied_blocks = set()
-                for tr0 in getattr(track_map, "trains", []) or []:
-                    try:
-                        occupied_blocks.add(int(tr0.block.num))
-                    except Exception:
-                        pass
-
-                green_payload: dict[int, dict] = {}
-                for _sec, blks in (GREEN_LINE_BLOCKS or {}).items():
-                    for inf0 in blks:
-                        try:
-                            bn0 = int(inf0[0])
-                        except Exception:
-                            continue
-                        try:
-                            cmd0 = float(inf0[3])
-                        except Exception:
-                            cmd0 = 0.0
-                        try:
-                            auth_km0 = float(inf0[1]) / 1000.0
-                        except Exception:
-                            auth_km0 = 0.0
-                        green_payload[bn0] = {
-                            "occupied": (bn0 in occupied_blocks),
-                            "cmd_speed": cmd0,
-                            "authority": auth_km0,
-                        }
-                state.push_ctc_data("Green", green_payload)
-                state.push_ctc_data("Red", {})
-            except Exception:
-                pass
+            # NOTE: Do NOT push a raw block-length-based authority snapshot here.
+            # That would give block 62 only 0.05 km authority (50m/1000), which the
+            # wayside sees as "cannot clear next block" and computes a red signal —
+            # stalling the train permanently if the wayside thread polls before the
+            # correct CTC push (from _poll_active_trains below) arrives.
+            # _poll_active_trains calls _build_ctc_block_state which uses the full
+            # destination-based authority calculation — let that do the work.
 
             # Move Manual-* to Train-*,
             ext[f"Train-{new_t_id}"] = {
@@ -513,6 +486,50 @@ def main() -> None:
 
             ws_switches = (green_ws or {}).get("switches", {}) if isinstance(green_ws, dict) else {}
             _sync_track_model_switches(track_map, ws_switches, _WS_GREEN_SWITCHES)
+
+            # Force-align branch-switch blocks neighbouring each synced host.
+            # _sync_track_model_switches only mirrors blocks with identical option-sets;
+            # branch switches ("wl..." type in the CSV) differ and get missed, causing
+            # "CRASH (switch)" when the train tries to cross the boundary.
+            for sw_id, pos in ws_switches.items():
+                sw_def = _WS_GREEN_SWITCHES.get(sw_id)
+                if not sw_def:
+                    continue
+                try:
+                    host_i = int(sw_def.get("host", -1))
+                    desired_next = (sw_def["reverse"][0] if str(pos).lower() == "reverse"
+                                    else sw_def["normal"][0])
+                    desired_next_i = int(desired_next) if desired_next else 0
+                except Exception:
+                    continue
+                if host_i <= 0 or desired_next_i <= 0:
+                    continue
+                # Check both the normal and reverse target blocks.
+                for branch_bn in {sw_def["normal"][0], sw_def["reverse"][0]}:
+                    try:
+                        branch_bn_i = int(branch_bn)
+                    except Exception:
+                        continue
+                    if branch_bn_i <= 0:
+                        continue
+                    branch_b = track_map.block(branch_bn_i)
+                    if branch_b is None or not hasattr(branch_b, "switch_state"):
+                        continue
+                    if not branch_b.is_switch():
+                        continue
+                    # Find which switch_state of branch_b routes back toward host_i.
+                    try:
+                        opt1 = getattr(branch_b, "first_switch_option", lambda: ())()
+                        opt2 = getattr(branch_b, "second_switch_option", lambda: ())()
+                        opt1_i = [int(x) for x in opt1 if str(x).lstrip("-").isdigit()]
+                        opt2_i = [int(x) for x in opt2 if str(x).lstrip("-").isdigit()]
+                        if host_i in opt2_i and branch_b.switch_state != 1:
+                            branch_b.switch_state = 1
+                        elif host_i in opt1_i and branch_b.switch_state != 0:
+                            branch_b.switch_state = 0
+                    except Exception:
+                        pass
+
             for it in getattr(track_map, "items", []) or []:
                 try:
                     it.update()
@@ -562,11 +579,19 @@ def main() -> None:
             cmd, auth = _apply_signal(cmd, auth, sig)
             tr.integrated_cmd_kmh = cmd
             tr.integrated_auth_km = auth
-            _last_cmd_kmh[ti] = float(cmd)
-            _last_auth_km[ti] = float(auth)
+            # Only update the carry-forward cache on non-zero values.
+            # A red signal returns (0, 0); writing that would poison the cache
+            # and prevent recovery once the signal clears on the next tick.
+            if float(cmd) > 0.0:
+                _last_cmd_kmh[ti] = float(cmd)
+            if float(auth) > 0.0:
+                _last_auth_km[ti] = float(auth)
 
         for train_id, system in train_models.items():
             idx = train_id - 1
+            # Don't overwrite the authority we zeroed for dest-held trains.
+            if (idx + 1) in _dest_hold_on:
+                continue
             m = system.model
             td = track_map.get_train_track_data(idx)
             if td:
@@ -719,11 +744,19 @@ def main() -> None:
             except Exception:
                 continue
 
-            # Destination hold
+            # Destination hold: stop the train when it reaches its destination.
+            # Clear the hold if the destination has been changed to a different block
+            # (operator re-dispatched the train), so it can move again.
             try:
                 dest_bn = ctc_win._external_trains.get(f"Train-{ti}", {}).get("dest_block")
                 if dest_bn is not None and int(dest_bn) == cur_bn:
                     _dest_hold_on.add(ti)
+                elif ti in _dest_hold_on:
+                    # Destination changed — release the hold and the service brake.
+                    _dest_hold_on.discard(ti)
+                    sys_obj = train_models.get(ti)
+                    if sys_obj is not None:
+                        sys_obj.controller.service_brake = False
             except Exception:
                 pass
 
@@ -736,6 +769,10 @@ def main() -> None:
                     sys_obj = train_models.get(ti)
                     if sys_obj is not None:
                         sys_obj.controller.service_brake = True
+                        # Zero authority so the display correctly shows the train
+                        # has no further clearance at its destination.
+                        sys_obj.model.commandedAuthorityKm = 0.0
+                        sys_obj.controller.authority = 0.0
                 except Exception:
                     pass
                 continue
