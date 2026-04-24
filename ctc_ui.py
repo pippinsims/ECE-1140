@@ -1412,18 +1412,26 @@ class MainWindow(QMainWindow):
     def _suggested_speed_text_for_block(self, line_full: str, section: str, block_num: int) -> str | None:
         """
         Return suggested speed text for a block if a live manual/external train on
-        that block has a computed suggested speed.
+        this line has a computed suggested speed and the block lies on that train's
+        current route segment.
         """
         for info in getattr(self, "_external_trains", {}).values():
             if info.get("line") != line_full:
                 continue
-            if info.get("section") != section:
-                continue
             try:
-                if int(info.get("block")) != int(block_num):
-                    continue
+                cur_block = int(info.get("block"))
+                dest_block = int(info.get("dest_block"))
+                target_block = int(block_num)
             except (TypeError, ValueError):
                 continue
+
+            # Show the same live suggested speed on every block that lies along
+            # the train's active path (inclusive of current and destination).
+            low = min(cur_block, dest_block)
+            high = max(cur_block, dest_block)
+            if not (low <= target_block <= high):
+                continue
+
             sk = info.get("suggested_speed_kmh")
             if sk is None:
                 continue
