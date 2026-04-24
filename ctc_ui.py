@@ -1029,11 +1029,15 @@ class MainWindow(QMainWindow):
         title = QLabel("Central Traffic Control Office")
         title.setStyleSheet(
             "color:white; font-weight:800; font-size:15px;")
+        self.header_clock_label = QLabel("")
+        self.header_clock_label.setStyleSheet(
+            "color:white; font-weight:700; font-size:13px;")
 
         hbox.addWidget(logo)
         hbox.addSpacing(16)
         hbox.addWidget(title)
         hbox.addStretch(1)
+        hbox.addWidget(self.header_clock_label)
         outer.addWidget(header)
 
         # ── Track Diagram panel ───────────────────────────────────────────────
@@ -1366,6 +1370,13 @@ class MainWindow(QMainWindow):
         if self._shared is not None:
             self._wayside_poll_timer.start()
 
+        # ── Header clock timer (local system time) ───────────────────────────
+        self._header_clock_timer = QTimer(self)
+        self._header_clock_timer.setInterval(1000)
+        self._header_clock_timer.timeout.connect(self._update_header_clock)
+        self._update_header_clock()
+        self._header_clock_timer.start()
+
         self._current_line = None
         self._current_section = None
         self._external_trains = {}
@@ -1375,6 +1386,35 @@ class MainWindow(QMainWindow):
         self._rail_cross_state = {}  # (line_short, crossing_block) -> "down" | "up" | None
 
     # ── Interactions ──────────────────────────────────────────────────────────
+
+    def _update_header_clock(self) -> None:
+        """Update header clock to local current time."""
+        self.header_clock_label.setText(datetime.now().strftime("%I:%M:%S %p"))
+
+    def _suggested_speed_text_for_block(self, line_full: str, section: str, block_num: int) -> str | None:
+        """
+        Return suggested speed text for a block if a live manual/external train on
+        that block has a computed suggested speed.
+        """
+        for info in getattr(self, "_external_trains", {}).values():
+            if info.get("line") != line_full:
+                continue
+            if info.get("section") != section:
+                continue
+            try:
+                if int(info.get("block")) != int(block_num):
+                    continue
+            except (TypeError, ValueError):
+                continue
+            sk = info.get("suggested_speed_kmh")
+            if sk is None:
+                continue
+            try:
+                sk_val = float(sk)
+            except (TypeError, ValueError):
+                continue
+            return f"{round(sk_val * 0.621371, 1)} mph"
+        return None
 
     def _update_block_panel(self, label, line: str, track_widget):
         """Shared logic: update bottom-left panel for any line/section click."""
@@ -1455,7 +1495,8 @@ class MainWindow(QMainWindow):
         self.maint_check.setChecked(False)
         self.maint_check.blockSignals(False)
         self.detail_title_lbl.setText(f"Block Details (Block {bn}, {self._current_line})")
-        self.speed_edit.setText(f"{speed_mph} mph")
+        suggested_txt = self._suggested_speed_text_for_block(self._current_line, self._current_section, bn)
+        self.speed_edit.setText(suggested_txt if suggested_txt is not None else f"{speed_mph} mph")
         self.auth_edit.setText(f"{length_ft} ft")
         self.speed_edit.setReadOnly(True)
         self.auth_edit.setReadOnly(True)
@@ -1522,7 +1563,10 @@ class MainWindow(QMainWindow):
                     info = next((b for b in blocks if b[0] == bn), None)
                     if info:
                         _, length_m, _, speed_kmh = info
-                        self.speed_edit.setText(f"{round(speed_kmh * 0.621371, 1)} mph")
+                        suggested_txt = self._suggested_speed_text_for_block(self._current_line, self._current_section, bn)
+                        self.speed_edit.setText(
+                            suggested_txt if suggested_txt is not None else f"{round(speed_kmh * 0.621371, 1)} mph"
+                        )
                         self.auth_edit.setText(f"{round(length_m * 3.28084, 1)} ft")
                 if not has_switch:
                     self.switch_widget.hide()
