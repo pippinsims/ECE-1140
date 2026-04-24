@@ -270,8 +270,8 @@ def main() -> None:
     app.setPalette(light)
 
     ctc_win = MainWindow(shared_state=state)
-    # Only the three physical trains appear on the CTC / wayside (not T-01…T-10).
-    ctc_win._integrated_hide_schedule_trains = True
+    # Keep automatic schedule trains visible in CTC when users click Load.
+    ctc_win._integrated_hide_schedule_trains = False
     ctc_win._integrated_sim_clock_from_launcher = True
     # One simulation tick in ``on_tick`` so inject → poll order is guaranteed.
     if hasattr(ctc_win, "_train_timer"):
