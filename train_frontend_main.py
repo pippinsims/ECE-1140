@@ -1,12 +1,13 @@
 # ai was used for styling and layout creation of the ui
 
 import sys
+import os
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QGridLayout, QHBoxLayout, QVBoxLayout, QGroupBox, QSizePolicy, QGraphicsDropShadowEffect
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QPixmap
 
 # colors used
 BG_PAGE         = "#F7F8FA"
@@ -28,6 +29,13 @@ ADS_TEXT        = "#6B7280"
 
 
 class TrainControlUI(QMainWindow):
+    # Ad images to cycle through
+    AD_IMAGES = [
+        "ad_1_grimace_shake.svg",
+        "ad_2_duolingo.svg",
+        "ad_3_monster_energy.svg",
+    ]
+
     def __init__(self, trainModel=None):
         super().__init__()
 
@@ -36,6 +44,7 @@ class TrainControlUI(QMainWindow):
         self.engineFaultOn    = False
         self.brakeFaultOn     = False
         self.powerFaultOn     = False
+        self.currentAdIndex   = 0
 
         self.setWindowTitle("Train Model")
         self.setBaseSize(1080, 800)
@@ -202,11 +211,11 @@ class TrainControlUI(QMainWindow):
         """)
         adsCardLayout = QVBoxLayout(adsCard)
         adsCardLayout.setContentsMargins(18, 14, 18, 14)
-        adsPlaceholder = QLabel("[ Ad Content Placeholder ]")
-        adsPlaceholder.setFont(QFont("Segoe UI", 14))
-        adsPlaceholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        adsPlaceholder.setStyleSheet(f"color: {ADS_BORDER}; background: transparent; border: none;")
-        adsCardLayout.addWidget(adsPlaceholder)
+        self.adsLabel = QLabel()
+        self.adsLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.adsLabel.setStyleSheet(f"background: transparent; border: none;")
+        self._updateAdImage()
+        adsCardLayout.addWidget(self.adsLabel)
         bottomLayout.addWidget(adsCard, stretch=2)
 
         bodyLayout.addWidget(bottomRow, stretch=2)
@@ -216,10 +225,34 @@ class TrainControlUI(QMainWindow):
         self.refreshTimer.timeout.connect(self.refreshFromModel)
         self.refreshTimer.start(100)
 
+        # ad cycling timer (15 second interval)
+        self.adTimer = QTimer()
+        self.adTimer.timeout.connect(self._cycleAd)
+        self.adTimer.start(15000)  # 15 seconds
+
         # add doorlabel for test compatibility
         self.doorLabel = QLabel()
 
-    # ui helpers 
+    # ui helpers
+
+    def _updateAdImage(self):
+        """Load and display the current ad image."""
+        if 0 <= self.currentAdIndex < len(self.AD_IMAGES):
+            ad_file = self.AD_IMAGES[self.currentAdIndex]
+            ad_path = os.path.join(os.path.dirname(__file__), ad_file)
+            if os.path.exists(ad_path):
+                pixmap = QPixmap(ad_path)
+                # Scale to fit the ad card (max 400x200 to keep proportions)
+                scaled_pixmap = pixmap.scaledToHeight(200, Qt.TransformationMode.SmoothTransformation)
+                self.adsLabel.setPixmap(scaled_pixmap)
+                return
+        # Fallback if no valid image
+        self.adsLabel.setText("[ Ad Content ]")
+
+    def _cycleAd(self):
+        """Move to the next ad in the rotation."""
+        self.currentAdIndex = (self.currentAdIndex + 1) % len(self.AD_IMAGES)
+        self._updateAdImage()
 
     def _makeCard(self):
         # creates a white rounded card with a subtle border and shadow
