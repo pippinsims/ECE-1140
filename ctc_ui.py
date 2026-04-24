@@ -1411,9 +1411,9 @@ class MainWindow(QMainWindow):
 
     def _suggested_speed_text_for_block(self, line_full: str, section: str, block_num: int) -> str | None:
         """
-        Return suggested speed text for a block if a live manual/external train on
-        this line has a computed suggested speed and the block lies on that train's
-        current route segment.
+        Return a live suggested speed for the selected block.
+        Recomputes speed from that block to destination using remaining wall-clock
+        time to the train's target arrival.
         """
         for info in getattr(self, "_external_trains", {}).values():
             if info.get("line") != line_full:
@@ -1425,20 +1425,50 @@ class MainWindow(QMainWindow):
             except (TypeError, ValueError):
                 continue
 
-            # Show the same live suggested speed on every block that lies along
-            # the train's active path (inclusive of current and destination).
-            low = min(cur_block, dest_block)
-            high = max(cur_block, dest_block)
-            if not (low <= target_block <= high):
+            # Current external-train movement logic traverses increasing block
+            # numbers toward destination; only show route-ahead blocks.
+            if not (cur_block <= target_block <= dest_block):
                 continue
 
-            sk = info.get("suggested_speed_kmh")
-            if sk is None:
+            arrival_str = (info.get("arrival") or "").strip()
+            if not (arrival_str and re.match(r"^\d{1,2}:\d{2}$", arrival_str)):
                 continue
+
             try:
-                sk_val = float(sk)
-            except (TypeError, ValueError):
+                hh, mm = arrival_str.split(":")
+                h, m = int(hh), int(mm)
+                now_dt = datetime.now()
+                target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                if target_dt <= now_dt:
+                    target_dt += timedelta(days=1)
+                wall_remaining_s = (target_dt - now_dt).total_seconds()
+                if wall_remaining_s <= 0:
+                    continue
+
+                block_info = _GREEN_BLOCK_INFO if "Green" in line_full else _RED_BLOCK_INFO
+
+                # Remaining metres from the selected block to destination.
+                if target_block == cur_block:
+                    _s, cur_len_m, _v = block_info.get(cur_block, ("", 50.0, 30.0))
+                    dist_in_cur = float(info.get("dist_in_block_m", 0.0))
+                    dist_in_cur = max(0.0, min(dist_in_cur, float(cur_len_m)))
+                    remaining_m = max(0.0, float(cur_len_m) - dist_in_cur)
+                    if dest_block > cur_block:
+                        remaining_m += _distance_between_blocks_m(
+                            block_info, cur_block + 1, dest_block
+                        )
+                else:
+                    remaining_m = _distance_between_blocks_m(
+                        block_info, target_block, dest_block
+                    )
+
+                if remaining_m <= 0:
+                    continue
+
+                sk_val = (remaining_m / max(1e-6, wall_remaining_s)) * 3.6
+            except Exception:
                 continue
+
             return f"{round(sk_val * 0.621371, 1)} mph"
         return None
 
