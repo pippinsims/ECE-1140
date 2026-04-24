@@ -31,26 +31,28 @@ from PyQt6.QtWidgets import (
 # Trains 2-10 are dispatched 3 minutes (180 s) later per train.
 _G_MIN = 60   # helper: convert minutes → seconds
 DEFAULT_GREEN_WAYPOINTS = [
-    ( 0*_G_MIN, "A",   1, "Pioneer"),
-    ( 1*_G_MIN, "A",   2, "Pioneer"),
-    ( 4*_G_MIN, "C",   9, "Edgebrook"),
-    ( 8*_G_MIN, "D",  16, "D Station"),
-    (12*_G_MIN, "F",  22, "Whited"),
-    (16*_G_MIN, "G",  31, "South Bank"),
-    (19*_G_MIN, "I",  39, "Central"),
-    (21*_G_MIN, "I",  48, "Inglewood"),
-    (24*_G_MIN, "I",  57, "Overbrook"),
-    (27*_G_MIN, "K",  65, "Glenbury"),
-    (31*_G_MIN, "L",  73, "Dormont"),
-    (34*_G_MIN, "N",  77, "Mt Lebanon"),
-    (41*_G_MIN, "O",  88, "Poplar"),
-    (44*_G_MIN, "P",  96, "Castle Shannon"),
-    (48*_G_MIN, "T", 105, "Dormont"),
-    (51*_G_MIN, "U", 113, "Glenbury"),
-    (54*_G_MIN, "W", 123, "Overbrook"),
-    (57*_G_MIN, "W", 132, "Inglewood"),
-    (60*_G_MIN, "W", 141, "Central"),
-    (90*_G_MIN, "W", 141, "Central"),   # end of run
+    # Dispatch from Yard first, then continue existing route order.
+    ( 0*_G_MIN, "J",  58, "Yard"),
+    ( 1*_G_MIN, "A",   1, "Pioneer"),
+    ( 2*_G_MIN, "A",   2, "Pioneer"),
+    ( 5*_G_MIN, "C",   9, "Edgebrook"),
+    ( 9*_G_MIN, "D",  16, "D Station"),
+    (13*_G_MIN, "F",  22, "Whited"),
+    (17*_G_MIN, "G",  31, "South Bank"),
+    (20*_G_MIN, "I",  39, "Central"),
+    (22*_G_MIN, "I",  48, "Inglewood"),
+    (25*_G_MIN, "I",  57, "Overbrook"),
+    (28*_G_MIN, "K",  65, "Glenbury"),
+    (32*_G_MIN, "L",  73, "Dormont"),
+    (35*_G_MIN, "N",  77, "Mt Lebanon"),
+    (42*_G_MIN, "O",  88, "Poplar"),
+    (45*_G_MIN, "P",  96, "Castle Shannon"),
+    (49*_G_MIN, "T", 105, "Dormont"),
+    (52*_G_MIN, "U", 113, "Glenbury"),
+    (55*_G_MIN, "W", 123, "Overbrook"),
+    (58*_G_MIN, "W", 132, "Inglewood"),
+    (61*_G_MIN, "W", 141, "Central"),
+    (91*_G_MIN, "W", 141, "Central"),   # end of run
 ]
 _GREEN_NUM_TRAINS    = 10
 _GREEN_TRAIN_GAP_SEC = 3 * 60   # 3 minutes between each train dispatch
