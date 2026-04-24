@@ -1,6 +1,7 @@
 # ai was used to help with code development logic and structure
 
 import math
+import random
 
 #pulled from provided specsheet
 samplePeriodSec             = 0.1      # 100 ms tick to update 
@@ -41,6 +42,7 @@ class TrainModel:
         self.isTrackCircuitFailed       = False
         self.isTrackPowerLost           = False
         self.boardingPassengerCount     = 0
+        self.alightingPassengerCount    = 0
 
         # inputs from train controller
         self.cabinTemperatureC       = 20.0
@@ -135,8 +137,6 @@ class TrainModel:
 
         # update state for this tick
         self.currentSpeedKmh        = newVelocityMps * 3.6
-        self.onboardPassengers     += self.boardingPassengerCount
-        self.boardingPassengerCount  = 0
         self.elapsedTimeSec        += dt
         self._prevVelocityMps       = newVelocityMps
         self._prevAccelMps2         = newAccelMps2
@@ -275,8 +275,8 @@ class TrainSystem:
 
         m.cabinTemperatureC = fToC(float(getattr(c, "cabin_temp", cToF(m.cabinTemperatureC))))
 
-        m.onboardPassengers = int(getattr(c, "passengers", m.onboardPassengers))
-        m.boardingPassengerCount = 0
+        # Backend-generated deboarding demand for the next station stop.
+        m.alightingPassengerCount = random.randint(0, max(0, int(m.onboardPassengers)))
 
         beacon_str = (m.beaconData or "").strip()
         c.next_station = beacon_str
@@ -285,5 +285,7 @@ class TrainSystem:
         m.requestedTractionPowerW = float(getattr(c, "power_output", 0.0))
 
         m.tick(dt)
+
+        c.passengers = int(m.onboardPassengers)
 
         self._push_model_authority_to_controller()

@@ -270,8 +270,8 @@ def main() -> None:
     app.setPalette(light)
 
     ctc_win = MainWindow(shared_state=state)
-    # Only the three physical trains appear on the CTC / wayside (not T-01…T-10).
-    ctc_win._integrated_hide_schedule_trains = True
+    # Keep automatic schedule trains visible in CTC when users click Load.
+    ctc_win._integrated_hide_schedule_trains = False
     ctc_win._integrated_sim_clock_from_launcher = True
     # One simulation tick in ``on_tick`` so inject → poll order is guaranteed.
     if hasattr(ctc_win, "_train_timer"):
@@ -556,23 +556,14 @@ def main() -> None:
                     la = float(_last_auth_km.get(ti, 0.0))
                     if la > 0.0:
                         auth = la
-                try:
-                    lim = float(getattr(tr.block, "speed_limit", 0.0) or 0.0)
-                    if lim > 0.0:
-                        cmd = min(cmd, lim)
-                except Exception:
-                    pass
+                # Honor wayside/CTC commanded speed directly. Do not clamp to
+                # static track speed limit here; CTC may intentionally command
+                # a route-level arrival-target speed.
             elif allow_motion:
                 # Carry forward last commanded speed/authority instead of dropping to 0
-                # at each new block, and clamp to the local speed limit.
+                # at each new block.
                 cmd = float(_last_cmd_kmh.get(ti, 0.0))
                 auth = float(_last_auth_km.get(ti, 0.0))
-                try:
-                    lim = float(getattr(tr.block, "speed_limit", 0.0) or 0.0)
-                    if lim > 0.0:
-                        cmd = min(cmd, lim)
-                except Exception:
-                    pass
             else:
                 cmd = 0.0
                 auth = 0.0
@@ -733,8 +724,22 @@ def main() -> None:
 
         for train_id, system in train_models.items():
             track_map.set_train_speed(train_id - 1, system.model.currentSpeedKmh)
+            idx = train_id - 1
+            if 0 <= idx < len(track_map.trains):
+                tr = track_map.trains[idx]
+                tr.num_riding = int(max(0, getattr(system.model, "onboardPassengers", tr.num_riding)))
+                tr.integrated_alighting_count = int(max(0, getattr(system.model, "alightingPassengerCount", 0)))
 
         track_map.update(physics_dt)
+
+        # Passenger count is finalized by Track Model board/deboard logic.
+        # Mirror it back to each Train Model for UI/backend consistency.
+        for train_id, system in train_models.items():
+            idx = train_id - 1
+            if 0 <= idx < len(track_map.trains):
+                riders = int(max(0, getattr(track_map.trains[idx], "num_riding", 0)))
+                system.model.onboardPassengers = riders
+                system.controller.passengers = riders
 
         # Apply station dwell + destination hold AFTER the Track Model advances blocks,
         # so we don't miss stations/destination when multiple blocks are traversed in one tick.

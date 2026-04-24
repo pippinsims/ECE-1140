@@ -613,8 +613,8 @@ class WaysideFrame(tk.Frame):
         All incoming data should be in metric units (km/h, km).
         Conversion to imperial (mph, miles) for the UI happens here.
         """
-        if self._testing_mode:
-            return   # ignore live pushes while in manual testing mode
+        # Accept live pushes in both modes. In integrated runs, operators may
+        # open the testing view while still expecting CTC-fed values to update.
 
         # Full snapshot: CTC only lists occupied blocks. Clear any block on this
         # line that is missing from the payload (otherwise old occupancies linger).

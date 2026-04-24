@@ -96,7 +96,7 @@ class TrainControlUI(QMainWindow):
 
         self.speedLabel      = self._addStatRow(trainGrid, 0, "Speed",        "0.00 mph")
         self.speedLimitLabel = self._addStatRow(trainGrid, 1, "Speed Limit",  "0.00 mph")
-        self.stationLabel    = self._addStatRow(trainGrid, 2, "Next Station", "—")
+        self.stationLabel    = self._addStatRow(trainGrid, 2, "Station Info", "—")
         self.distanceLabel   = self._addStatRow(trainGrid, 3, "Distance",     "0.00 mi")
         self.powerLabel      = self._addStatRow(trainGrid, 4, "Power",        "0.00 kW")
         self.accelLabel      = self._addStatRow(trainGrid, 5, "Acceleration", "0.0000 ft/s²")

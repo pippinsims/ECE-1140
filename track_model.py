@@ -263,6 +263,7 @@ class Train:
         self.speed = 0
         self.num_riding = 0
         self.beacon = ''
+        self.integrated_alighting_count: int = 0
         # Integrated launcher may override command/authority per-train even if
         # multiple trains share a block (do not rely solely on block fields).
         self.integrated_cmd_kmh: float | None = None
@@ -276,15 +277,17 @@ class Train:
             self.beacon = self.block.beacondata()
     
     def board(self):
-        import random
-        r = random.randint(0, self.num_riding)
+        # Offboarding count comes from the integrated Train Model backend.
+        r = max(0, int(getattr(self, "integrated_alighting_count", 0)))
+        r = min(r, self.num_riding)
         self.num_riding -= r
         self.block.num_standing += r
         # print(f"{r} got off of the train")
         # print(f"{self.block.num_standing} are standing")
 
-        self.block.num_standing -= self.block.num_boarding
-        self.num_riding += self.block.num_boarding
+        boarded = min(int(self.block.num_boarding), int(self.block.num_standing))
+        self.block.num_standing -= boarded
+        self.num_riding += boarded
         # print(f"{self.block.num_boarding} got on the train")
         # print(f"{self.block.num_standing} are standing")
 

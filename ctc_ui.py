@@ -1,7 +1,8 @@
 import sys
 import re
 import math
-from datetime import datetime
+import time
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from PyQt6.QtCore import Qt, QRect, QPoint, QTimer
 from PyQt6.QtGui import QPalette, QColor
@@ -30,26 +31,28 @@ from PyQt6.QtWidgets import (
 # Trains 2-10 are dispatched 3 minutes (180 s) later per train.
 _G_MIN = 60   # helper: convert minutes → seconds
 DEFAULT_GREEN_WAYPOINTS = [
-    ( 0*_G_MIN, "A",   1, "Pioneer"),
-    ( 1*_G_MIN, "A",   2, "Pioneer"),
-    ( 4*_G_MIN, "C",   9, "Edgebrook"),
-    ( 8*_G_MIN, "D",  16, "D Station"),
-    (12*_G_MIN, "F",  22, "Whited"),
-    (16*_G_MIN, "G",  31, "South Bank"),
-    (19*_G_MIN, "I",  39, "Central"),
-    (21*_G_MIN, "I",  48, "Inglewood"),
-    (24*_G_MIN, "I",  57, "Overbrook"),
-    (27*_G_MIN, "K",  65, "Glenbury"),
-    (31*_G_MIN, "L",  73, "Dormont"),
-    (34*_G_MIN, "N",  77, "Mt Lebanon"),
-    (41*_G_MIN, "O",  88, "Poplar"),
-    (44*_G_MIN, "P",  96, "Castle Shannon"),
-    (48*_G_MIN, "T", 105, "Dormont"),
-    (51*_G_MIN, "U", 113, "Glenbury"),
-    (54*_G_MIN, "W", 123, "Overbrook"),
-    (57*_G_MIN, "W", 132, "Inglewood"),
-    (60*_G_MIN, "W", 141, "Central"),
-    (90*_G_MIN, "W", 141, "Central"),   # end of run
+    # Dispatch from Yard first, then continue existing route order.
+    ( 0*_G_MIN, "J",  58, "Yard"),
+    ( 1*_G_MIN, "A",   1, "Pioneer"),
+    ( 2*_G_MIN, "A",   2, "Pioneer"),
+    ( 5*_G_MIN, "C",   9, "Edgebrook"),
+    ( 9*_G_MIN, "D",  16, "D Station"),
+    (13*_G_MIN, "F",  22, "Whited"),
+    (17*_G_MIN, "G",  31, "South Bank"),
+    (20*_G_MIN, "I",  39, "Central"),
+    (22*_G_MIN, "I",  48, "Inglewood"),
+    (25*_G_MIN, "I",  57, "Overbrook"),
+    (28*_G_MIN, "K",  65, "Glenbury"),
+    (32*_G_MIN, "L",  73, "Dormont"),
+    (35*_G_MIN, "N",  77, "Mt Lebanon"),
+    (42*_G_MIN, "O",  88, "Poplar"),
+    (45*_G_MIN, "P",  96, "Castle Shannon"),
+    (49*_G_MIN, "T", 105, "Dormont"),
+    (52*_G_MIN, "U", 113, "Glenbury"),
+    (55*_G_MIN, "W", 123, "Overbrook"),
+    (58*_G_MIN, "W", 132, "Inglewood"),
+    (61*_G_MIN, "W", 141, "Central"),
+    (91*_G_MIN, "W", 141, "Central"),   # end of run
 ]
 _GREEN_NUM_TRAINS    = 10
 _GREEN_TRAIN_GAP_SEC = 3 * 60   # 3 minutes between each train dispatch
@@ -281,6 +284,34 @@ def _dest_block_for_station(line_short: str, station_name: str) -> int | None:
             if lbl == station_name:
                 return bn
     return None
+
+
+def _yard_dispatch_start_block(line_short: str) -> int | None:
+    """
+    Block used when manually dispatching a train *from* Yard.
+
+    Green line dispatches out of the yard onto block 63.
+    Red line keeps its yard-connected start block.
+    """
+    if line_short == "Green":
+        return 63
+    return _dest_block_for_station(line_short, "Yard")
+
+
+def _distance_between_blocks_m(
+    block_info: dict[int, tuple[str, float, float]], start_block: int, end_block: int
+) -> float:
+    """
+    Sum block lengths from start_block to end_block (inclusive), assuming
+    increasing block-number traversal as used by manual train advancement.
+    """
+    if end_block < start_block:
+        return 0.0
+    total = 0.0
+    for bn in range(start_block, end_block + 1):
+        _sec, length_m, _spd = block_info.get(bn, ("", 50.0, 30.0))
+        total += float(length_m)
+    return total
 
 
 def _block_items(line: str):
@@ -1001,11 +1032,15 @@ class MainWindow(QMainWindow):
         title = QLabel("Central Traffic Control Office")
         title.setStyleSheet(
             "color:white; font-weight:800; font-size:15px;")
+        self.header_clock_label = QLabel("")
+        self.header_clock_label.setStyleSheet(
+            "color:white; font-weight:700; font-size:13px;")
 
         hbox.addWidget(logo)
         hbox.addSpacing(16)
         hbox.addWidget(title)
         hbox.addStretch(1)
+        hbox.addWidget(self.header_clock_label)
         outer.addWidget(header)
 
         # ── Track Diagram panel ───────────────────────────────────────────────
@@ -1338,6 +1373,15 @@ class MainWindow(QMainWindow):
         if self._shared is not None:
             self._wayside_poll_timer.start()
 
+        # ── Header clock timer (simulation-scaled local time) ────────────────
+        self._sim_clock_dt = datetime.now()
+        self._sim_clock_last_wall = time.monotonic()
+        self._header_clock_timer = QTimer(self)
+        self._header_clock_timer.setInterval(100)
+        self._header_clock_timer.timeout.connect(self._update_header_clock)
+        self._update_header_clock()
+        self._header_clock_timer.start()
+
         self._current_line = None
         self._current_section = None
         self._external_trains = {}
@@ -1347,6 +1391,88 @@ class MainWindow(QMainWindow):
         self._rail_cross_state = {}  # (line_short, crossing_block) -> "down" | "up" | None
 
     # ── Interactions ──────────────────────────────────────────────────────────
+
+    def _update_header_clock(self) -> None:
+        """
+        Update header clock and scale it with simulation speed.
+
+        At slider=10, clock runs at 1x wall-clock.
+        Higher slider values speed it up proportionally.
+        """
+        now_wall = time.monotonic()
+        elapsed_wall_s = max(0.0, now_wall - getattr(self, "_sim_clock_last_wall", now_wall))
+        self._sim_clock_last_wall = now_wall
+
+        try:
+            speed_factor = max(1.0, float(self.speed_slider.value())) / 10.0
+        except Exception:
+            speed_factor = 1.0
+
+        self._sim_clock_dt = self._sim_clock_dt + timedelta(seconds=elapsed_wall_s * speed_factor)
+        self.header_clock_label.setText(self._sim_clock_dt.strftime("%I:%M:%S %p"))
+
+    def _suggested_speed_text_for_block(self, line_full: str, section: str, block_num: int) -> str | None:
+        """
+        Return a live suggested speed for the selected block.
+        Recomputes speed from that block to destination using remaining wall-clock
+        time to the train's target arrival.
+        """
+        for info in getattr(self, "_external_trains", {}).values():
+            if info.get("line") != line_full:
+                continue
+            try:
+                cur_block = int(info.get("block"))
+                dest_block = int(info.get("dest_block"))
+                target_block = int(block_num)
+            except (TypeError, ValueError):
+                continue
+
+            # Current external-train movement logic traverses increasing block
+            # numbers toward destination; only show route-ahead blocks.
+            if not (cur_block <= target_block <= dest_block):
+                continue
+
+            arrival_str = (info.get("arrival") or "").strip()
+            if not (arrival_str and re.match(r"^\d{1,2}:\d{2}$", arrival_str)):
+                continue
+
+            try:
+                hh, mm = arrival_str.split(":")
+                h, m = int(hh), int(mm)
+                now_dt = datetime.now()
+                target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                if target_dt <= now_dt:
+                    target_dt += timedelta(days=1)
+                wall_remaining_s = (target_dt - now_dt).total_seconds()
+                if wall_remaining_s <= 0:
+                    continue
+
+                block_info = _GREEN_BLOCK_INFO if "Green" in line_full else _RED_BLOCK_INFO
+
+                # Remaining metres from the selected block to destination.
+                if target_block == cur_block:
+                    _s, cur_len_m, _v = block_info.get(cur_block, ("", 50.0, 30.0))
+                    dist_in_cur = float(info.get("dist_in_block_m", 0.0))
+                    dist_in_cur = max(0.0, min(dist_in_cur, float(cur_len_m)))
+                    remaining_m = max(0.0, float(cur_len_m) - dist_in_cur)
+                    if dest_block > cur_block:
+                        remaining_m += _distance_between_blocks_m(
+                            block_info, cur_block + 1, dest_block
+                        )
+                else:
+                    remaining_m = _distance_between_blocks_m(
+                        block_info, target_block, dest_block
+                    )
+
+                if remaining_m <= 0:
+                    continue
+
+                sk_val = (remaining_m / max(1e-6, wall_remaining_s)) * 3.6
+            except Exception:
+                continue
+
+            return f"{round(sk_val * 0.621371, 1)} mph"
+        return None
 
     def _update_block_panel(self, label, line: str, track_widget):
         """Shared logic: update bottom-left panel for any line/section click."""
@@ -1427,7 +1553,8 @@ class MainWindow(QMainWindow):
         self.maint_check.setChecked(False)
         self.maint_check.blockSignals(False)
         self.detail_title_lbl.setText(f"Block Details (Block {bn}, {self._current_line})")
-        self.speed_edit.setText(f"{speed_mph} mph")
+        suggested_txt = self._suggested_speed_text_for_block(self._current_line, self._current_section, bn)
+        self.speed_edit.setText(suggested_txt if suggested_txt is not None else f"{speed_mph} mph")
         self.auth_edit.setText(f"{length_ft} ft")
         self.speed_edit.setReadOnly(True)
         self.auth_edit.setReadOnly(True)
@@ -1494,7 +1621,10 @@ class MainWindow(QMainWindow):
                     info = next((b for b in blocks if b[0] == bn), None)
                     if info:
                         _, length_m, _, speed_kmh = info
-                        self.speed_edit.setText(f"{round(speed_kmh * 0.621371, 1)} mph")
+                        suggested_txt = self._suggested_speed_text_for_block(self._current_line, self._current_section, bn)
+                        self.speed_edit.setText(
+                            suggested_txt if suggested_txt is not None else f"{round(speed_kmh * 0.621371, 1)} mph"
+                        )
                         self.auth_edit.setText(f"{round(length_m * 3.28084, 1)} ft")
                 if not has_switch:
                     self.switch_widget.hide()
@@ -1653,13 +1783,23 @@ class MainWindow(QMainWindow):
     def _on_dispatch_line_changed(self, line: str) -> None:
         """Repopulate From/To block dropdowns whenever the Line selector changes."""
         items = _block_items(line)
-        for combo in (self.origin_combo, self.dest_combo):
-            combo.blockSignals(True)
-            combo.clear()
-            for label, _ in items:
-                combo.addItem(label)
-            combo.blockSignals(False)
+
+        # From-block is always Yard for manual dispatch.
+        yard_block = _yard_dispatch_start_block(line)
+        yard_label = next((lbl for lbl, bn in items if bn == yard_block), str(yard_block))
+
+        self.origin_combo.blockSignals(True)
+        self.origin_combo.clear()
+        if yard_block is not None:
+            self.origin_combo.addItem(yard_label)
+        self.origin_combo.blockSignals(False)
         self.origin_combo.setCurrentIndex(0)
+
+        self.dest_combo.blockSignals(True)
+        self.dest_combo.clear()
+        for label, _ in items:
+            self.dest_combo.addItem(label)
+        self.dest_combo.blockSignals(False)
         self.dest_combo.setCurrentIndex(len(items) - 1)
 
     def _on_manual_load(self):
@@ -1689,6 +1829,19 @@ class MainWindow(QMainWindow):
         origin_block = int(origin_text)
         dest_block   = int(dest_text)
 
+        # Manual dispatch is yard-origin only.
+        yard_block = _yard_dispatch_start_block(line_short)
+        if yard_block is None:
+            self.info_msg.setText(f"Error: Could not resolve Yard block for {line_short} Line.")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        if origin_block != yard_block:
+            self.info_msg.setText(
+                f"Error: Manual dispatch must start from Yard (block {yard_block})."
+            )
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+
         if origin_block == dest_block:
             self.info_msg.setText("Error: Origin and destination cannot be the same block.")
             self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
@@ -1711,7 +1864,7 @@ class MainWindow(QMainWindow):
 
         # Station name labels for the confirmation message
         stn_map    = GREEN_BLOCK_STATIONS if line_short == "Green" else RED_BLOCK_STATIONS
-        origin_lbl = stn_map.get(origin_block, f"Block {origin_block}")
+        origin_lbl = "Yard" if origin_block == yard_block else stn_map.get(origin_block, f"Block {origin_block}")
         dest_lbl   = stn_map.get(dest_block,   f"Block {dest_block}")
 
         self._manual_train_counter += 1
@@ -1725,10 +1878,22 @@ class MainWindow(QMainWindow):
             "dest_block": dest_block,
             "arrival":    time_str,
         }
+
+        # Initial suggested speed from total trip distance and requested arrival.
+        block_info = _GREEN_BLOCK_INFO if line_short == "Green" else _RED_BLOCK_INFO
+        trip_distance_m = _distance_between_blocks_m(block_info, origin_block, dest_block)
+        wall_remaining_s = max(1.0, (arrival_time - now).total_seconds())
+        # Suggested speed is based on real wall-clock remaining time to the
+        # requested arrival target.
+        suggested_speed_kmh = (trip_distance_m / max(1.0, wall_remaining_s)) * 3.6
+        self._external_trains[train_id]["suggested_speed_kmh"] = round(suggested_speed_kmh, 2)
+        suggested_speed_mph = suggested_speed_kmh * 0.621371
+
         self._poll_active_trains()
         self.info_msg.setText(
             f"{line_short} Line train dispatched: {origin_lbl} → {dest_lbl}. "
-            f"Sec {section}, Blk {origin_block}. Arrival at {time_str}."
+            f"Sec {section}, Blk {origin_block}. Arrival at {time_str}. "
+            f"Suggested speed: {suggested_speed_mph:.1f} mph."
         )
         self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
@@ -1773,6 +1938,7 @@ class MainWindow(QMainWindow):
         # Advance manually-dispatched train positions along the track.
         # This is a no-op when launch_system is driving positions via the track model.
         self._advance_external_trains()
+        self._auto_route_arrived_trains_to_yard()
 
         trains = []
         # Integrated launcher uses 3 physical trains only; skip T-01…T-10 so the
@@ -1887,6 +2053,50 @@ class MainWindow(QMainWindow):
         # Push occupied block data to SharedState for Wayside to consume
         if self._shared is not None:
             self._build_ctc_block_state(trains)
+
+    def _auto_route_arrived_trains_to_yard(self):
+        """
+        When an external train reaches a non-yard destination, automatically
+        retarget it to Yard so the route can be sent back.
+        """
+        for tid, info in getattr(self, "_external_trains", {}).items():
+            dest_block = info.get("dest_block")
+            if dest_block is None:
+                continue
+            try:
+                cur_block = int(info.get("block"))
+                dest_block_int = int(dest_block)
+            except (TypeError, ValueError):
+                continue
+
+            # We only retarget exactly when the train reaches its destination.
+            if cur_block != dest_block_int:
+                continue
+
+            dest_name = (info.get("dest") or "").strip()
+            if dest_name.lower() == "yard":
+                continue
+
+            # Prevent repeating the same auto-reroute every poll tick.
+            if info.get("_auto_return_from_dest_block") == dest_block_int:
+                continue
+
+            line_full = info.get("line", "")
+            line_short = "Green" if "Green" in line_full else "Red"
+            yard_block = _dest_block_for_station(line_short, "Yard")
+            if yard_block is None:
+                continue
+
+            info["_auto_return_from_dest_block"] = dest_block_int
+            info["origin"] = dest_name or f"Block {dest_block_int}"
+            info["dest"] = "Yard"
+            info["dest_block"] = yard_block
+
+            self.info_msg.setText(
+                f"{line_short} Line {tid} reached {info['origin']}. "
+                f"Destination auto-set to Yard."
+            )
+            self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
     def on_left_list_selected(self):
         pass  # no detail panel — selection is visual only
@@ -2032,8 +2242,46 @@ def _mw_advance_external_trains(self) -> None:
         if speed_kmh <= 0:
             speed_kmh = 30.0
 
+        # Compute a suggested speed to target the configured arrival time using:
+        # remaining distance / effective simulation time remaining.
+        suggested_speed_kmh = None
+        arrival_str = (info.get("arrival") or "").strip()
+        if arrival_str and re.match(r"^\d{1,2}:\d{2}$", arrival_str):
+            try:
+                hh, mm = arrival_str.split(":")
+                h, m = int(hh), int(mm)
+                now_dt = datetime.now()
+                target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                if target_dt <= now_dt:
+                    target_dt += timedelta(days=1)
+                wall_remaining_s = (target_dt - now_dt).total_seconds()
+
+                # Remaining metres to destination (including current block remainder).
+                _sec_cur, cur_len_m, _spd_cur = block_info.get(
+                    cur_block, (sec, 50.0, 30.0)
+                )
+                dist_in_cur = float(info.get("dist_in_block_m", 0.0))
+                dist_in_cur = max(0.0, min(dist_in_cur, float(cur_len_m)))
+                remaining_m = max(0.0, float(cur_len_m) - dist_in_cur)
+                if dest_block > cur_block:
+                    remaining_m += _distance_between_blocks_m(
+                        block_info, cur_block + 1, dest_block
+                    )
+
+                if wall_remaining_s > 0 and remaining_m > 0:
+                    # Use wall-clock remaining time so the arrival target is
+                    # interpreted as actual clock time (HH:MM), not sim-time.
+                    suggested_speed_kmh = (remaining_m / max(1e-6, wall_remaining_s)) * 3.6
+            except Exception:
+                suggested_speed_kmh = None
+
+        if suggested_speed_kmh is not None:
+            info["suggested_speed_kmh"] = round(suggested_speed_kmh, 2)
+            # Drive movement from the arrival-targeted suggested speed.
+            speed_kmh = max(0.0, float(suggested_speed_kmh))
+
         # Distance to advance this tick (metres).
-        # speed in km/h → m/s = speed * 1000/3600; × sim_seconds_per_tick
+        # speed in km/h -> m/s = speed * 1000/3600; x sim_seconds_per_tick
         delta_m = speed_kmh * (1000.0 / 3600.0) * sim_seconds_per_tick
 
         dist = info.get("dist_in_block_m", 0.0) + delta_m
@@ -2108,22 +2356,43 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
     green_data: dict = {}
     red_data:   dict = {}
 
-    # Build a reverse map from train_id -> dest_block for external trains so
-    # we can compute destination-based authority.
+    # Build reverse lookups from external trains so we can compute destination-
+    # based authority and override static cmd_speed with live suggested speed.
     ext = getattr(self, "_external_trains", {}) or {}
     # Key: (line_short, block_num) -> dest_block  (best-effort, may be None)
     _dest_lookup: dict = {}
+    # Key: (line_short, block_num) -> suggested_speed_kmh (occupied block)
+    _cmd_speed_lookup: dict = {}
+    # Key: (line_short, block_num) -> (suggested_speed_kmh, dest_block)
+    # Used to push live suggested speed across the active route segment.
+    _route_speed_lookup: dict = {}
     for tid, tinfo in ext.items():
         db = tinfo.get("dest_block")
-        if db is None:
-            continue
         line_full = tinfo.get("line", "")
         ls = "Green" if "Green" in line_full else ("Red" if "Red" in line_full else None)
-        if ls:
+        if not ls:
+            continue
+        try:
+            cur_bn = int(tinfo.get("block", -1))
+        except (TypeError, ValueError):
+            continue
+        if db is not None:
             try:
                 _dest_lookup[(ls, int(tinfo.get("block", -1)))] = int(db)
             except (TypeError, ValueError):
                 pass
+        sk = tinfo.get("suggested_speed_kmh")
+        try:
+            if sk is not None:
+                sk_val = max(0.0, float(sk))
+                _cmd_speed_lookup[(ls, cur_bn)] = sk_val
+                if db is not None:
+                    dest_bn = int(db)
+                    if cur_bn <= dest_bn:
+                        for rb in range(cur_bn, dest_bn + 1):
+                            _route_speed_lookup[(ls, rb)] = (sk_val, dest_bn)
+        except (TypeError, ValueError):
+            pass
 
     def _authority_km(line_short: str, cur_bn: int) -> float:
         """
@@ -2148,6 +2417,18 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
             total_m += blen
         return total_m / 1000.0
 
+    def _authority_to_dest_km(line_short: str, cur_bn: int, dest_bn: int) -> float:
+        """Authority from cur_bn to dest_bn (inclusive), in km."""
+        block_info = _GREEN_BLOCK_INFO if line_short == "Green" else _RED_BLOCK_INFO
+        if dest_bn <= cur_bn:
+            return 0.0
+        total_m = 0.0
+        max_b = max(block_info.keys()) if block_info else cur_bn
+        for b in range(cur_bn, min(dest_bn, max_b) + 1):
+            _, blen, _ = block_info.get(b, ("", 50.0, 0.0))
+            total_m += blen
+        return total_m / 1000.0
+
     for t in trains:
         line_short = t.get("line", "")
         blk_str    = t.get("block", "")
@@ -2165,13 +2446,32 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
             continue
 
         _, length_m, speed_kmh = block_info.get(bn, ("", 50.0, 30.0))
+        cmd_speed_kmh = _cmd_speed_lookup.get((line_short, bn), speed_kmh)
         authority_km = _authority_km(line_short, bn)
 
         target[bn] = {
             "occupied":  True,
-            "cmd_speed": speed_kmh,
+            "cmd_speed": cmd_speed_kmh,
             "authority": authority_km,
         }
+
+    # Ensure wayside receives live suggested speed across the active route
+    # segment (not just the currently occupied block).
+    for (line_short, bn), (sk_val, dest_bn) in _route_speed_lookup.items():
+        target = green_data if line_short == "Green" else red_data
+        auth_km = _authority_to_dest_km(line_short, bn, dest_bn)
+        existing = target.get(bn)
+        if existing is not None:
+            existing["cmd_speed"] = sk_val
+            # Keep occupied state from existing snapshot; update authority so
+            # route blocks have a destination-based value.
+            existing["authority"] = auth_km
+        else:
+            target[bn] = {
+                "occupied": False,
+                "cmd_speed": sk_val,
+                "authority": auth_km,
+            }
 
     # Always push both lines (possibly empty). Otherwise wayside keeps stale
     # occupancy for blocks that are no longer in this snapshot, and an empty
