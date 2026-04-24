@@ -13,9 +13,6 @@ NONEPEN = QPen(Qt.PenStyle.NoPen) #QPen(QColor("black"),0)
 
 # Track Model dark theme (local styling only)
 TM_BG = QColor("#0b1020")          # window background
-TM_PANEL = QColor("#111827")       # block tile background
-TM_GRID = QColor("#1f2937")        # subtle borders
-TM_TEXT = QColor("#e5e7eb")
 
 def div(x, y):
     return int(x/y)
@@ -32,6 +29,15 @@ def remall(x, l: list) -> list:
     for i in c: 
         if i == x: c.remove(x)
     return c
+
+def remdupes(l: list) -> list:
+    found = None
+    for i,x in enumerate(l[:-1]):
+        for y in l[i+1:]:
+            if x == y:
+                found = x
+    l = [x for x in l if x != found]
+    return l
 
 def sign(b: bool)->int: return 1 if b else -1
 
@@ -69,7 +75,8 @@ class Block:
         self.dsrptrck = False
         self.nopower = False
 
-        self.isdownward = False
+        self.up = -1
+        self.lo = -1
         self.next = []
         self.prev = []
 
@@ -139,13 +146,11 @@ class Block:
                 #[othr,self,self,othr]
                 #[othr,self,othr,self]
             n = self.token("e")
-            if len(n) > 0: 
-                print(f"block{self.num},{self.tokens()}")
+            if len(n) > 0:
                 self.next = [int(x.strip("e")) for x in n.split(",")]
                 if flip: list.reverse(self.next)
             p = self.token("p")
             if len(p) > 0:
-                print(f"block{self.num},{self.tokens()}")
                 self.prev = [int(x.strip("p")) for x in p.split(",")]
                 if flipp: list.reverse(self.prev)
         else:
@@ -155,6 +160,9 @@ class Block:
             else:
                 self.prev.append(self.num+1)
                 self.next.append(self.num-1)
+
+        print(f"{self.num}prev:{self.prev}")
+        print(f"{self.num}next:{self.next}")
         
         if self.has_light(): self.light_state = "green"
             
@@ -188,67 +196,36 @@ class Block:
             if "," in tok: return tok.split(",")[0].split("-")
             else: return tok.split("-")
         return [int(x) for x in guts()]
+    def first(self) -> int: return [x for x in self.first_switch_option() if x != self.num][0]
     def second_switch_option(self) -> tuple[int,int]: #from,to
         def guts():
             tok = self.token("w")[1:]
             return tok.split(",")[1].split("-")
         return [int(x) for x in guts()]
+    def second(self) -> int: return [x for x in self.second_switch_option() if x != self.num][0]
 
     def cur_switch_option(self):
         return [self.first_switch_option(),self.second_switch_option()][self.switch_state]
-    
-    def top_next(self):
-        n = []+self.next
-        ops = self.first_switch_option()+self.second_switch_option()
-        ops = [int(x) for x in ops if x != str(self.num)]
-        
-        if set(ops) != set(n):
-            for x in ops:
-                if x in n:
-                    n.remove(x)
-                    return n[0]
-        else:
-            return ops[0]
-    
-    def bot_next(self):
-        for x in self.next:
-            if x != self.top_next(): return x
-
-    def top_prev(self):
-        p = []+self.prev
-        ops = self.first_switch_option()+self.second_switch_option()
-        ops = [int(x) for x in ops if x != str(self.num)]
-
-        if set(ops) != set(p):
-            for x in ops:
-                if x in p:
-                    p.remove(x)
-                    return p[0]
-        else:
-            return ops[0]
-    
-    def bot_prev(self):
-        for x in self.prev:
-            if x != self.top_prev(): return x
+    def cur(self) -> int: [x for x in self.cur_switch_option() if x != self.num][0]
 
     def chosen_next(self):
         if len(self.next) > 1:
-            check = [x for x in self.cur_switch_option() if x != self.num][0]
+            check = self.cur()
             if check in self.next:
                 return check
             else:
-                unwanted = [x for x in self.first_switch_option()+self.second_switch_option() if x != self.num and x != check][0]
+                unwanted = [x for x in [self.first()]+[self.second()] if x != check][0]
                 return [x for x in self.next if x != unwanted][0]
         else:
             return self.next[0]
 
     def chosen_prev(self):
         if len(self.prev) > 1:
-            check = [x for x in self.cur_switch_option() if x != self.num][0]
+            check = self.cur()
             if check in self.prev: 
                 return check
             else:
-                unwanted = [x for x in self.first_switch_option()+self.second_switch_option() if x != self.num and x != check][0]
+                unwanted = [x for x in [self.first()]+[self.second()] if x != check][0]
                 return [x for x in self.prev if x != unwanted][0]
         else:
             return self.prev[0]
@@ -278,6 +255,7 @@ class Train:
         self.dir = "+"
         self.num = num
         self.pos_on_b = 0
+        self.from_b = 0
         self.block:Block = tkm.blocks[0]
         self.speed = 0
         self.num_riding = 0
@@ -357,11 +335,87 @@ class TrackRectItem(QGraphicsRectItem):
         text.setFont(QFont("Segoe UI", 12))
         if b.is_main_switch(): text.setPos((b.x+0.5 )*BOXSIZE-div(text.boundingRect().width(),2),  b.y     *BOXSIZE)
         else:                  text.setPos((b.x+0.25)*BOXSIZE-div(text.boundingRect().width(),2), (b.y+0.5)*BOXSIZE)
-        text.setPen(QPen(TM_TEXT, 1))
+        text.setPen(WHITPEN)
         self.setZValue(0)
 
-        # if b.card: 
-        self.drawTrack(scene)
+        def addHead(s,e,downward = False):
+            (sx,sy),(ex,ey) = s,e
+            import math
+            size = 5
+            ang = math.atan2(ey - sy, ex - sx)
+            xdif, ydif = size*math.cos(ang), size*math.sin(ang)
+            left  = QPointF(ex-xdif + 0.6*ydif, ey-ydif - 0.6*xdif)
+            right = QPointF(ex-xdif - 0.6*ydif, ey-ydif + 0.6*xdif)
+            tip   = QPointF(ex, ey)
+            head = QGraphicsPolygonItem(QPolygonF([tip, left, right]))
+
+            # Ensure arrows render above the filled block tiles (dark theme).
+            head.setZValue(2)
+            head.setBrush(QBrush(QColor("#60a5fa")))
+            head.setPen(WHITPEN)
+
+            if downward: self.downArrow.append(head)
+            else: self.upArrow.append(head)
+            scene.addItem(head)
+
+        def addArrow(stup, etup, downward = False):
+            x, y = self.myx*BOXSIZE, self.myy*BOXSIZE
+            sx,ex,sy,ey = [d + int(BOXSIZE*i) for d,i in zip([x,x,y,y],[stup[0],etup[0],stup[1],etup[1]])]
+            
+            line = QGraphicsLineItem(sx,sy,ex,ey)
+            line.setZValue(1)
+            line.setPen(WHITPEN)
+
+            if downward: self.downArrow.append(line)
+            else: self.upArrow.append(line)
+            scene.addItem(line)
+            
+            addHead((sx,sy),(ex,ey), downward)
+            if self.block.directionality == "b": addHead((ex,ey),(sx,sy), downward)
+
+        if self.block.is_main_switch():
+            b = self.block
+
+            # print(f"building switch:{b.num}")
+            # print(f"p{b.prev}")
+            # print(f"n{b.next}")
+            # print(f"f{b.first_switch_option()}")
+            # print(f"s{b.second_switch_option()}")
+
+            self.text.setX(self.text.x()-10)
+            self.text.setY(self.text.y()+20)
+
+            shared = None
+            prevnext = b.prev+b.next
+            for i,x in enumerate(prevnext[:-1]):
+                for y in prevnext[i+1:]:
+                    if x == y:
+                        shared = x #the prevnext duplicate
+            if len(b.next) == 1 or shared == b.num+1:
+                addArrow((1,0),(0,0.5))
+                addArrow((1,1),(0,0.5),True)
+            if len(b.prev) == 1 or shared == b.num-1:
+                addArrow((1,0.5),(0,0))
+                addArrow((1,0.5),(0,1),True)                
+
+            u,d = str(b.first()),str(b.second())
+
+            def make(it:QGraphicsSimpleTextItem,y):
+                it.setFont(QFont("Segoe UI", 12))
+                it.setPos((b.x+0.5)*BOXSIZE-div(it.boundingRect().width(),2),b.y*BOXSIZE+y)
+                it.setPen(WHITPEN)
+
+            make(QGraphicsSimpleTextItem(u, self), -10)
+            make(QGraphicsSimpleTextItem(d, self), +50)
+        else:
+            sx,ex,sy,ey = [0.5]*4
+            sx,ex = 1,0
+            if self.block.directionality in "+bs":
+                addArrow((sx,sy),(ex,ey))
+            # elif self.block.directionality == "s":
+            #     print("HELLO")#TODO
+            else:
+                addArrow((ex,ey),(sx,sy))
     
     def mousePressEvent(self, event):
         b = self.block
@@ -419,111 +473,6 @@ class TrackRectItem(QGraphicsRectItem):
         if self.block.is_crossing():
             self.crossing_icon('black' if p == BLCKPEN else 'white')
             self.text.setPen(p)
-        
-    def drawTrack(self, scene: QGraphicsScene):
-        def addHead(s,e,downward = False):
-            (sx,sy),(ex,ey) = s,e
-            import math
-            size = 5
-            ang = math.atan2(ey - sy, ex - sx)
-            xdif, ydif = size*math.cos(ang), size*math.sin(ang)
-            left  = QPointF(ex-xdif + 0.6*ydif, ey-ydif - 0.6*xdif)
-            right = QPointF(ex-xdif - 0.6*ydif, ey-ydif + 0.6*xdif)
-            tip   = QPointF(ex, ey)
-            head = QGraphicsPolygonItem(QPolygonF([tip, left, right]))
-
-            # Ensure arrows render above the filled block tiles (dark theme).
-            head.setZValue(2)
-            head.setBrush(QBrush(QColor("#60a5fa")))
-            head.setPen(WHITPEN)
-
-            if downward: self.downArrow.append(head)
-            else: self.upArrow.append(head)
-            scene.addItem(head)
-            
-        sx,ex,sy,ey = [0.5]*4
-        
-        # if self.block.card == "left" : 
-        sx,ex = 1,0
-        # if self.block.card == "right": sx,ex = 0,1
-        # if self.block.card == "up"   : sy,ey = 1,0
-        # if self.block.card == "down" : sy,ey = 0,1
-
-        def addArrow(stup, etup, downward = False):
-            x, y = self.myx*BOXSIZE, self.myy*BOXSIZE
-            sx,ex,sy,ey = [d + int(BOXSIZE*i) for d,i in zip([x,x,y,y],[stup[0],etup[0],stup[1],etup[1]])]
-            
-            line = QGraphicsLineItem(sx,sy,ex,ey)
-            line.setZValue(1)
-            line.setPen(WHITPEN)
-
-            if downward: self.downArrow.append(line)
-            else: self.upArrow.append(line)
-            scene.addItem(line)
-            
-            addHead((sx,sy),(ex,ey), downward)
-            if self.block.directionality == "b":
-                addHead((ex,ey),(sx,sy), downward)
-
-        #TODO factor in directionality
-
-        # if self.block.is_switch():
-        if self.block.is_main_switch():
-            #next 
-            # \ __ from
-            # /
-            #next
-            #    or
-            #      from
-            #next __ / 
-            #        \
-            #      from
-            self.text.setX(self.text.x()-10)
-            self.text.setY(self.text.y()+20)
-
-            b = self.block
-            
-            if len(self.block.next) > 1:
-                addArrow((sx,sy),(ex, 0))
-                addArrow((sx,sy),(ex, 1),True)
-                u,d = self.block.top_next(),self.block.bot_next()
-                plus = -0.25
-            else:
-                addArrow((0,0.5),(1,0))
-                addArrow((0,0.5),(1,1),True)
-                u,d = self.block.top_prev(),self.block.bot_prev()
-                plus = 0.25
-
-                # if u == self.block.num-1:
-                #     addArrow((sx,sy),(ex, ey))
-                # else:    
-                
-                # if d == self.block.num-1:
-                #     addArrow((sx,sy),(ex, ey),True)
-                # else:
-
-            self.upbranchtext = ut = QGraphicsSimpleTextItem(str(u) if u > 0 else "Y", self)
-            ut.setFont(QFont("Segoe UI", 12))
-            ut.setPos((b.x+0.5+plus)*BOXSIZE-div(ut.boundingRect().width(),2),b.y*BOXSIZE-10)
-            ut.setPen(WHITPEN)
-            
-            self.dnbranchtext = dt = QGraphicsSimpleTextItem(str(d) if d > 0 else "Y", self)
-            dt.setFont(QFont("Segoe UI", 12))
-            dt.setPos((b.x+0.5+plus)*BOXSIZE-div(dt.boundingRect().width(),2),b.y*BOXSIZE+50)
-            dt.setPen(WHITPEN)
-        # else:
-        #     if self.block.isdownward:
-        #         self.text.setY(self.text.y()-10)
-        #         self.text.setX(self.text.x()-7)
-        #         addArrow((sx,0),(ex, ey))
-        #     else:
-        #         addArrow((sx,1),(ex, ey))
-        else:
-            
-            if self.block.directionality in "+bs":
-                addArrow((sx,sy),(ex,ey))
-            else:
-                addArrow((ex,ey),(sx,sy))
 
 class TrackMap:
     def __init__(self, filename):
@@ -539,50 +488,28 @@ class TrackMap:
     def build(self):
         for b in self.blocks:
             if b.num == 0: 
-                b.setx(10)
-                b.sety(10)
+                b.setx(0)
+                b.sety(0)
             elif b.num == 1:
                 b.setx(int(self.width*0.75))
                 b.sety(int(self.height*0.5))
-            elif b.num == 2:
-                b.setx(int(self.width*0.75))
-                b.sety(int(self.height*0.5)+2)
             else:
+                print(b.num)
                 if b.directionality in "+bs": b0 = self.block(min(b.prev))
                 else:                         b0 = self.block(min(b.next))
                 if b0.num == 0:               b0 = self.block([x for x in b.prev if x != 0][0])
-                # Some CSV orderings / directionality choices can reference a neighbor
-                # that hasn't been assigned coordinates yet. Fall back to a safe default
-                # so build never crashes; positions will still be deterministic.
-                if b0 is not None and not hasattr(b0, "y"):
-                    try:
-                        b0.setx(int(self.width * 0.75))
-                        b0.sety(int(self.height * 0.5))
-                    except Exception:
-                        pass
-                
-                if b0.is_main_switch() and len(b0.next) > 1:
-                    if b.num == b0.top_next():
-                        b.sety(b0.y-1)
-                    else:
-                        b.sety(b0.y+1)
-                        b.isdownward = True
+                    
+                if b0.is_main_switch():
+                    if   b0.first()  == b.num: b.sety(b0.y-1)
+                    elif b0.second() == b.num: b.sety(b0.y+1)
+                    else:                      b.sety(b0.y)
                 else: 
                     b.sety(b0.y)
                 
-                #
-                #18 17 16 15 <14>< 
-                #                13 <1 <2 <3 <4 <5 <6 <7> <8> <9> <10> <11> <12>
-                #             12>   
-                # 
-                b.setx(b0.x-1) #TODO follow direction of prev
-
-        print(self.blocks[84].next)
-        print(self.blocks[84].prev)
-        print(self.blocks[76].next)
-        print(self.blocks[76].prev)
-        print(self.blocks[27].next)
-        print(self.blocks[27].prev)
+                if (b.directionality in "s+" and b0.directionality == "-") or (b.directionality == "-" and b0.directionality in "s+"):
+                    b.sety(b.y+2)
+                
+                b.setx(b0.x-1)
     
     def block(self, n):
         for b in self.blocks:
@@ -623,21 +550,26 @@ class TrackMap:
                 old = t.pos_on_b
                 t.pos_on_b += t.speed * (10/36) * tickrate
                 
-                while t.pos_on_b > t.block.mylength or t.pos_on_b < 0:
+                while t.pos_on_b > t.block.mylength:
                     b = t.block
                     if b.is_switch():
                         if b.directionality == "s": 
                             k = b.first_switch_option() #must be branch if "s"
                             if k[0] == b.num: c = k[1]
                             else:             c = b.num+1 #default for "s" seems to be fine to be "+"
-                        elif t.dir == "+": c = b.chosen_next() #TODO using only this causes 13 to go to 14 even when t.dir=="-"
-                        elif t.dir == "-": c = b.chosen_prev() #TODO this causes 77 to go to 78 when t.dir=="-"
+                        else:
+                            chsn_sw_opt = b.chosen_next(),b.chosen_prev() #to,from
+                            if t.dir == "-": chsn_sw_opt = chsn_sw_opt[::-1]
+                            bad_dir = chsn_sw_opt[0] == t.from_b 
+                            if bad_dir: t.dir = "-" if t.dir == "+" else "+"
+                            c = chsn_sw_opt[to_int(bad_dir)]
                         if c == 0:
                             self.trains.remove(t)
                             b.deoccupy()
                             break
                         else:
                             to_b = self.blocks[c-1]
+                            if c == b.chosen_prev(): t.dir = "+"
 
                     elif b.directionality == "+":
                         t.dir = "+"
@@ -654,6 +586,8 @@ class TrackMap:
                         else:            to_b = self.blocks[b.prev[0]-1]
 
                     if to_b.num == b.num-1: t.dir = "-"
+
+                    t.from_b = b.num
 
                     print(f"traveling from block {b.num}")
                     print(f"to block {to_b.num}")
@@ -672,13 +606,9 @@ class TrackMap:
                         t.pos_on_b = old
                         print(f"train {t.num} CRASH (crossing)")
                         break
-
-                    #going forward is defined as getting closer to next
-                    # if b.directionality in "+b" or b.is_switch(): going_forward = to_b.num in b.next
-                    # elif b.directionality == "-":                going_forward = to_b.num in b.prev
                     
                     t.block.deoccupy()
-                    t.pos_on_b -= t.block.mylength #* sign(going_forward)
+                    t.pos_on_b -= t.block.mylength
                     t.block = to_b
                     t.update()
                     
@@ -769,8 +699,7 @@ class UIControls:
                 self.selectedRect.block.dsrptrck = circ.isChecked()
                 self.selectedRect.block.nopower = pwr.isChecked()
 
-        lay = QVBoxLayout(controls)
-
+        lay = QVBoxLayout()
         for c in [brk,circ,pwr]:
             c.setTristate(False)
             c.setChecked(False)
