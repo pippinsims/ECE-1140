@@ -31,9 +31,9 @@ ADS_TEXT        = "#6B7280"
 class TrainControlUI(QMainWindow):
     # Ad images to cycle through
     AD_IMAGES = [
-        "ad_1_grimace_shake.svg",
-        "ad_2_duolingo.svg",
-        "ad_3_monster_energy.svg",
+        "assets/ad_1_grimace_shake.svg",
+        "assets/ad_2_duolingo.svg",
+        "assets/ad_3_monster_energy.svg",
     ]
 
     def __init__(self, trainModel=None):
