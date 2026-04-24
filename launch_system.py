@@ -556,23 +556,14 @@ def main() -> None:
                     la = float(_last_auth_km.get(ti, 0.0))
                     if la > 0.0:
                         auth = la
-                try:
-                    lim = float(getattr(tr.block, "speed_limit", 0.0) or 0.0)
-                    if lim > 0.0:
-                        cmd = min(cmd, lim)
-                except Exception:
-                    pass
+                # Honor wayside/CTC commanded speed directly. Do not clamp to
+                # static track speed limit here; CTC may intentionally command
+                # a route-level arrival-target speed.
             elif allow_motion:
                 # Carry forward last commanded speed/authority instead of dropping to 0
-                # at each new block, and clamp to the local speed limit.
+                # at each new block.
                 cmd = float(_last_cmd_kmh.get(ti, 0.0))
                 auth = float(_last_auth_km.get(ti, 0.0))
-                try:
-                    lim = float(getattr(tr.block, "speed_limit", 0.0) or 0.0)
-                    if lim > 0.0:
-                        cmd = min(cmd, lim)
-                except Exception:
-                    pass
             else:
                 cmd = 0.0
                 auth = 0.0
