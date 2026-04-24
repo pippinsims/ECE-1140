@@ -283,6 +283,18 @@ def _dest_block_for_station(line_short: str, station_name: str) -> int | None:
     return None
 
 
+def _yard_dispatch_start_block(line_short: str) -> int | None:
+    """
+    Block used when manually dispatching a train *from* Yard.
+
+    Green line dispatches out of the yard onto block 63.
+    Red line keeps its yard-connected start block.
+    """
+    if line_short == "Green":
+        return 63
+    return _dest_block_for_station(line_short, "Yard")
+
+
 def _block_items(line: str):
     """
     Return a list of (display_str, block_num) tuples for every block on the
@@ -1653,13 +1665,23 @@ class MainWindow(QMainWindow):
     def _on_dispatch_line_changed(self, line: str) -> None:
         """Repopulate From/To block dropdowns whenever the Line selector changes."""
         items = _block_items(line)
-        for combo in (self.origin_combo, self.dest_combo):
-            combo.blockSignals(True)
-            combo.clear()
-            for label, _ in items:
-                combo.addItem(label)
-            combo.blockSignals(False)
+
+        # From-block is always Yard for manual dispatch.
+        yard_block = _yard_dispatch_start_block(line)
+        yard_label = next((lbl for lbl, bn in items if bn == yard_block), str(yard_block))
+
+        self.origin_combo.blockSignals(True)
+        self.origin_combo.clear()
+        if yard_block is not None:
+            self.origin_combo.addItem(yard_label)
+        self.origin_combo.blockSignals(False)
         self.origin_combo.setCurrentIndex(0)
+
+        self.dest_combo.blockSignals(True)
+        self.dest_combo.clear()
+        for label, _ in items:
+            self.dest_combo.addItem(label)
+        self.dest_combo.blockSignals(False)
         self.dest_combo.setCurrentIndex(len(items) - 1)
 
     def _on_manual_load(self):
@@ -1689,6 +1711,19 @@ class MainWindow(QMainWindow):
         origin_block = int(origin_text)
         dest_block   = int(dest_text)
 
+        # Manual dispatch is yard-origin only.
+        yard_block = _yard_dispatch_start_block(line_short)
+        if yard_block is None:
+            self.info_msg.setText(f"Error: Could not resolve Yard block for {line_short} Line.")
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+        if origin_block != yard_block:
+            self.info_msg.setText(
+                f"Error: Manual dispatch must start from Yard (block {yard_block})."
+            )
+            self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
+            return
+
         if origin_block == dest_block:
             self.info_msg.setText("Error: Origin and destination cannot be the same block.")
             self.info_msg.setStyleSheet("color:#c00; font-weight:bold;")
@@ -1711,7 +1746,7 @@ class MainWindow(QMainWindow):
 
         # Station name labels for the confirmation message
         stn_map    = GREEN_BLOCK_STATIONS if line_short == "Green" else RED_BLOCK_STATIONS
-        origin_lbl = stn_map.get(origin_block, f"Block {origin_block}")
+        origin_lbl = "Yard" if origin_block == yard_block else stn_map.get(origin_block, f"Block {origin_block}")
         dest_lbl   = stn_map.get(dest_block,   f"Block {dest_block}")
 
         self._manual_train_counter += 1
@@ -1773,6 +1808,7 @@ class MainWindow(QMainWindow):
         # Advance manually-dispatched train positions along the track.
         # This is a no-op when launch_system is driving positions via the track model.
         self._advance_external_trains()
+        self._auto_route_arrived_trains_to_yard()
 
         trains = []
         # Integrated launcher uses 3 physical trains only; skip T-01…T-10 so the
@@ -1887,6 +1923,50 @@ class MainWindow(QMainWindow):
         # Push occupied block data to SharedState for Wayside to consume
         if self._shared is not None:
             self._build_ctc_block_state(trains)
+
+    def _auto_route_arrived_trains_to_yard(self):
+        """
+        When an external train reaches a non-yard destination, automatically
+        retarget it to Yard so the route can be sent back.
+        """
+        for tid, info in getattr(self, "_external_trains", {}).items():
+            dest_block = info.get("dest_block")
+            if dest_block is None:
+                continue
+            try:
+                cur_block = int(info.get("block"))
+                dest_block_int = int(dest_block)
+            except (TypeError, ValueError):
+                continue
+
+            # We only retarget exactly when the train reaches its destination.
+            if cur_block != dest_block_int:
+                continue
+
+            dest_name = (info.get("dest") or "").strip()
+            if dest_name.lower() == "yard":
+                continue
+
+            # Prevent repeating the same auto-reroute every poll tick.
+            if info.get("_auto_return_from_dest_block") == dest_block_int:
+                continue
+
+            line_full = info.get("line", "")
+            line_short = "Green" if "Green" in line_full else "Red"
+            yard_block = _dest_block_for_station(line_short, "Yard")
+            if yard_block is None:
+                continue
+
+            info["_auto_return_from_dest_block"] = dest_block_int
+            info["origin"] = dest_name or f"Block {dest_block_int}"
+            info["dest"] = "Yard"
+            info["dest_block"] = yard_block
+
+            self.info_msg.setText(
+                f"{line_short} Line {tid} reached {info['origin']}. "
+                f"Destination auto-set to Yard."
+            )
+            self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
     def on_left_list_selected(self):
         pass  # no detail panel — selection is visual only
