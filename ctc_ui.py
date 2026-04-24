@@ -1781,14 +1781,9 @@ class MainWindow(QMainWindow):
         block_info = _GREEN_BLOCK_INFO if line_short == "Green" else _RED_BLOCK_INFO
         trip_distance_m = _distance_between_blocks_m(block_info, origin_block, dest_block)
         wall_remaining_s = max(1.0, (arrival_time - now).total_seconds())
-        try:
-            slider = float(self.speed_slider.value())
-        except Exception:
-            slider = 10.0
-        slider = max(1.0, min(100.0, slider))
-        tick_wall_s = 0.1
-        effective_sim_seconds = wall_remaining_s * (slider / tick_wall_s)
-        suggested_speed_kmh = (trip_distance_m / max(1.0, effective_sim_seconds)) * 3.6
+        # Suggested speed is based on real wall-clock remaining time to the
+        # requested arrival target.
+        suggested_speed_kmh = (trip_distance_m / max(1.0, wall_remaining_s)) * 3.6
         self._external_trains[train_id]["suggested_speed_kmh"] = round(suggested_speed_kmh, 2)
 
         self._poll_active_trains()
@@ -2171,8 +2166,9 @@ def _mw_advance_external_trains(self) -> None:
                     )
 
                 if wall_remaining_s > 0 and remaining_m > 0:
-                    effective_sim_seconds = wall_remaining_s * (sim_seconds_per_tick / TICK_WALL_SEC)
-                    suggested_speed_kmh = (remaining_m / max(1e-6, effective_sim_seconds)) * 3.6
+                    # Use wall-clock remaining time so the arrival target is
+                    # interpreted as actual clock time (HH:MM), not sim-time.
+                    suggested_speed_kmh = (remaining_m / max(1e-6, wall_remaining_s)) * 3.6
             except Exception:
                 suggested_speed_kmh = None
 
@@ -2181,8 +2177,14 @@ def _mw_advance_external_trains(self) -> None:
             speed_kmh = max(0.0, float(suggested_speed_kmh))
 
         # Distance to advance this tick (metres).
-        # speed in km/h → m/s = speed * 1000/3600; × sim_seconds_per_tick
-        delta_m = speed_kmh * (1000.0 / 3600.0) * sim_seconds_per_tick
+        # For arrival-targeted manual trains, advance on wall-clock tick timing
+        # so suggested speed tracks the requested HH:MM arrival directly.
+        if suggested_speed_kmh is not None:
+            delta_m = speed_kmh * (1000.0 / 3600.0) * TICK_WALL_SEC
+        else:
+            # Legacy behavior when no arrival target is set.
+            # speed in km/h → m/s = speed * 1000/3600; × sim_seconds_per_tick
+            delta_m = speed_kmh * (1000.0 / 3600.0) * sim_seconds_per_tick
 
         dist = info.get("dist_in_block_m", 0.0) + delta_m
 
