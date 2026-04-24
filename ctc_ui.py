@@ -1,7 +1,7 @@
 import sys
 import re
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from PyQt6.QtCore import Qt, QRect, QPoint, QTimer
 from PyQt6.QtGui import QPalette, QColor
@@ -293,6 +293,22 @@ def _yard_dispatch_start_block(line_short: str) -> int | None:
     if line_short == "Green":
         return 63
     return _dest_block_for_station(line_short, "Yard")
+
+
+def _distance_between_blocks_m(
+    block_info: dict[int, tuple[str, float, float]], start_block: int, end_block: int
+) -> float:
+    """
+    Sum block lengths from start_block to end_block (inclusive), assuming
+    increasing block-number traversal as used by manual train advancement.
+    """
+    if end_block < start_block:
+        return 0.0
+    total = 0.0
+    for bn in range(start_block, end_block + 1):
+        _sec, length_m, _spd = block_info.get(bn, ("", 50.0, 30.0))
+        total += float(length_m)
+    return total
 
 
 def _block_items(line: str):
@@ -1760,10 +1776,26 @@ class MainWindow(QMainWindow):
             "dest_block": dest_block,
             "arrival":    time_str,
         }
+
+        # Initial suggested speed from total trip distance and requested arrival.
+        block_info = _GREEN_BLOCK_INFO if line_short == "Green" else _RED_BLOCK_INFO
+        trip_distance_m = _distance_between_blocks_m(block_info, origin_block, dest_block)
+        wall_remaining_s = max(1.0, (arrival_time - now).total_seconds())
+        try:
+            slider = float(self.speed_slider.value())
+        except Exception:
+            slider = 10.0
+        slider = max(1.0, min(100.0, slider))
+        tick_wall_s = 0.1
+        effective_sim_seconds = wall_remaining_s * (slider / tick_wall_s)
+        suggested_speed_kmh = (trip_distance_m / max(1.0, effective_sim_seconds)) * 3.6
+        self._external_trains[train_id]["suggested_speed_kmh"] = round(suggested_speed_kmh, 2)
+
         self._poll_active_trains()
         self.info_msg.setText(
             f"{line_short} Line train dispatched: {origin_lbl} → {dest_lbl}. "
-            f"Sec {section}, Blk {origin_block}. Arrival at {time_str}."
+            f"Sec {section}, Blk {origin_block}. Arrival at {time_str}. "
+            f"Suggested speed: {suggested_speed_kmh:.1f} km/h."
         )
         self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
@@ -2111,6 +2143,42 @@ def _mw_advance_external_trains(self) -> None:
 
         if speed_kmh <= 0:
             speed_kmh = 30.0
+
+        # Compute a suggested speed to target the configured arrival time using:
+        # remaining distance / effective simulation time remaining.
+        suggested_speed_kmh = None
+        arrival_str = (info.get("arrival") or "").strip()
+        if arrival_str and re.match(r"^\d{1,2}:\d{2}$", arrival_str):
+            try:
+                hh, mm = arrival_str.split(":")
+                h, m = int(hh), int(mm)
+                now_dt = datetime.now()
+                target_dt = now_dt.replace(hour=h, minute=m, second=0, microsecond=0)
+                if target_dt <= now_dt:
+                    target_dt += timedelta(days=1)
+                wall_remaining_s = (target_dt - now_dt).total_seconds()
+
+                # Remaining metres to destination (including current block remainder).
+                _sec_cur, cur_len_m, _spd_cur = block_info.get(
+                    cur_block, (sec, 50.0, 30.0)
+                )
+                dist_in_cur = float(info.get("dist_in_block_m", 0.0))
+                dist_in_cur = max(0.0, min(dist_in_cur, float(cur_len_m)))
+                remaining_m = max(0.0, float(cur_len_m) - dist_in_cur)
+                if dest_block > cur_block:
+                    remaining_m += _distance_between_blocks_m(
+                        block_info, cur_block + 1, dest_block
+                    )
+
+                if wall_remaining_s > 0 and remaining_m > 0:
+                    effective_sim_seconds = wall_remaining_s * (sim_seconds_per_tick / TICK_WALL_SEC)
+                    suggested_speed_kmh = (remaining_m / max(1e-6, effective_sim_seconds)) * 3.6
+            except Exception:
+                suggested_speed_kmh = None
+
+        if suggested_speed_kmh is not None:
+            info["suggested_speed_kmh"] = round(suggested_speed_kmh, 2)
+            speed_kmh = max(0.0, float(suggested_speed_kmh))
 
         # Distance to advance this tick (metres).
         # speed in km/h → m/s = speed * 1000/3600; × sim_seconds_per_tick
