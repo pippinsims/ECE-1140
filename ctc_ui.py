@@ -2237,17 +2237,12 @@ def _mw_advance_external_trains(self) -> None:
 
         if suggested_speed_kmh is not None:
             info["suggested_speed_kmh"] = round(suggested_speed_kmh, 2)
+            # Drive movement from the arrival-targeted suggested speed.
             speed_kmh = max(0.0, float(suggested_speed_kmh))
 
         # Distance to advance this tick (metres).
-        # For arrival-targeted manual trains, advance on wall-clock tick timing
-        # so suggested speed tracks the requested HH:MM arrival directly.
-        if suggested_speed_kmh is not None:
-            delta_m = speed_kmh * (1000.0 / 3600.0) * TICK_WALL_SEC
-        else:
-            # Legacy behavior when no arrival target is set.
-            # speed in km/h → m/s = speed * 1000/3600; × sim_seconds_per_tick
-            delta_m = speed_kmh * (1000.0 / 3600.0) * sim_seconds_per_tick
+        # speed in km/h -> m/s = speed * 1000/3600; x sim_seconds_per_tick
+        delta_m = speed_kmh * (1000.0 / 3600.0) * sim_seconds_per_tick
 
         dist = info.get("dist_in_block_m", 0.0) + delta_m
 
