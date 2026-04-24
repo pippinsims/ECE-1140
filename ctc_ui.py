@@ -2359,8 +2359,11 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
     ext = getattr(self, "_external_trains", {}) or {}
     # Key: (line_short, block_num) -> dest_block  (best-effort, may be None)
     _dest_lookup: dict = {}
-    # Key: (line_short, block_num) -> suggested_speed_kmh
+    # Key: (line_short, block_num) -> suggested_speed_kmh (occupied block)
     _cmd_speed_lookup: dict = {}
+    # Key: (line_short, block_num) -> (suggested_speed_kmh, dest_block)
+    # Used to push live suggested speed across the active route segment.
+    _route_speed_lookup: dict = {}
     for tid, tinfo in ext.items():
         db = tinfo.get("dest_block")
         line_full = tinfo.get("line", "")
@@ -2379,7 +2382,13 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
         sk = tinfo.get("suggested_speed_kmh")
         try:
             if sk is not None:
-                _cmd_speed_lookup[(ls, cur_bn)] = max(0.0, float(sk))
+                sk_val = max(0.0, float(sk))
+                _cmd_speed_lookup[(ls, cur_bn)] = sk_val
+                if db is not None:
+                    dest_bn = int(db)
+                    if cur_bn <= dest_bn:
+                        for rb in range(cur_bn, dest_bn + 1):
+                            _route_speed_lookup[(ls, rb)] = (sk_val, dest_bn)
         except (TypeError, ValueError):
             pass
 
@@ -2402,6 +2411,18 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
         total_m = 0.0
         max_b = max(block_info.keys()) if block_info else cur_bn
         for b in range(cur_bn, min(dest, max_b) + 1):
+            _, blen, _ = block_info.get(b, ("", 50.0, 0.0))
+            total_m += blen
+        return total_m / 1000.0
+
+    def _authority_to_dest_km(line_short: str, cur_bn: int, dest_bn: int) -> float:
+        """Authority from cur_bn to dest_bn (inclusive), in km."""
+        block_info = _GREEN_BLOCK_INFO if line_short == "Green" else _RED_BLOCK_INFO
+        if dest_bn <= cur_bn:
+            return 0.0
+        total_m = 0.0
+        max_b = max(block_info.keys()) if block_info else cur_bn
+        for b in range(cur_bn, min(dest_bn, max_b) + 1):
             _, blen, _ = block_info.get(b, ("", 50.0, 0.0))
             total_m += blen
         return total_m / 1000.0
@@ -2431,6 +2452,24 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
             "cmd_speed": cmd_speed_kmh,
             "authority": authority_km,
         }
+
+    # Ensure wayside receives live suggested speed across the active route
+    # segment (not just the currently occupied block).
+    for (line_short, bn), (sk_val, dest_bn) in _route_speed_lookup.items():
+        target = green_data if line_short == "Green" else red_data
+        auth_km = _authority_to_dest_km(line_short, bn, dest_bn)
+        existing = target.get(bn)
+        if existing is not None:
+            existing["cmd_speed"] = sk_val
+            # Keep occupied state from existing snapshot; update authority so
+            # route blocks have a destination-based value.
+            existing["authority"] = auth_km
+        else:
+            target[bn] = {
+                "occupied": False,
+                "cmd_speed": sk_val,
+                "authority": auth_km,
+            }
 
     # Always push both lines (possibly empty). Otherwise wayside keeps stale
     # occupancy for blocks that are no longer in this snapshot, and an empty
