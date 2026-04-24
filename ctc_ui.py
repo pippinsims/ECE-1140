@@ -2354,22 +2354,34 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
     green_data: dict = {}
     red_data:   dict = {}
 
-    # Build a reverse map from train_id -> dest_block for external trains so
-    # we can compute destination-based authority.
+    # Build reverse lookups from external trains so we can compute destination-
+    # based authority and override static cmd_speed with live suggested speed.
     ext = getattr(self, "_external_trains", {}) or {}
     # Key: (line_short, block_num) -> dest_block  (best-effort, may be None)
     _dest_lookup: dict = {}
+    # Key: (line_short, block_num) -> suggested_speed_kmh
+    _cmd_speed_lookup: dict = {}
     for tid, tinfo in ext.items():
         db = tinfo.get("dest_block")
-        if db is None:
-            continue
         line_full = tinfo.get("line", "")
         ls = "Green" if "Green" in line_full else ("Red" if "Red" in line_full else None)
-        if ls:
+        if not ls:
+            continue
+        try:
+            cur_bn = int(tinfo.get("block", -1))
+        except (TypeError, ValueError):
+            continue
+        if db is not None:
             try:
                 _dest_lookup[(ls, int(tinfo.get("block", -1)))] = int(db)
             except (TypeError, ValueError):
                 pass
+        sk = tinfo.get("suggested_speed_kmh")
+        try:
+            if sk is not None:
+                _cmd_speed_lookup[(ls, cur_bn)] = max(0.0, float(sk))
+        except (TypeError, ValueError):
+            pass
 
     def _authority_km(line_short: str, cur_bn: int) -> float:
         """
@@ -2411,11 +2423,12 @@ def _mw_build_ctc_block_state(self, trains: list) -> None:
             continue
 
         _, length_m, speed_kmh = block_info.get(bn, ("", 50.0, 30.0))
+        cmd_speed_kmh = _cmd_speed_lookup.get((line_short, bn), speed_kmh)
         authority_km = _authority_km(line_short, bn)
 
         target[bn] = {
             "occupied":  True,
-            "cmd_speed": speed_kmh,
+            "cmd_speed": cmd_speed_kmh,
             "authority": authority_km,
         }
 
