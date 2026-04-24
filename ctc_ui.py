@@ -55,7 +55,7 @@ DEFAULT_GREEN_WAYPOINTS = [
     (91*_G_MIN, "W", 141, "Central"),   # end of run
 ]
 _GREEN_NUM_TRAINS    = 10
-_GREEN_TRAIN_GAP_SEC = 3 * 60   # 3 minutes between each train dispatch
+_GREEN_TRAIN_GAP_SEC = 3   # 3 seconds between each train dispatch
 
 # Station name -> (section, block) for manual dispatch start positions.
 # We derive this from the default schedule waypoints so the UI starts the train
@@ -312,6 +312,33 @@ def _distance_between_blocks_m(
         _sec, length_m, _spd = block_info.get(bn, ("", 50.0, 30.0))
         total += float(length_m)
     return total
+
+
+def _advance_block_wrap(start_block: int, step_count: int, max_block: int) -> int:
+    """
+    Advance step_count blocks with wrap-around (max_block -> 1).
+    """
+    if max_block <= 0:
+        return start_block
+    return ((int(start_block) - 1 + int(step_count)) % int(max_block)) + 1
+
+
+def _interpolated_block_between_waypoints(
+    start_block: int, end_block: int, fraction: float, max_block: int
+) -> int:
+    """
+    Interpolate block position from start_block to end_block using forward
+    wrap-around traversal (e.g., 58 -> 150 -> 1 -> ...).
+    """
+    f = max(0.0, min(1.0, float(fraction)))
+    if start_block == end_block:
+        return int(start_block)
+    if end_block >= start_block:
+        total_steps = end_block - start_block
+    else:
+        total_steps = (max_block - start_block) + end_block
+    steps_now = int(round(total_steps * f))
+    return _advance_block_wrap(start_block, steps_now, max_block)
 
 
 def _block_items(line: str):
@@ -1956,13 +1983,28 @@ class MainWindow(QMainWindow):
 
                 if train_t < 0 or train_t > end_sec:
                     continue
-                current_wp = DEFAULT_GREEN_WAYPOINTS[0]
-                for wp in DEFAULT_GREEN_WAYPOINTS:
+
+                # Move continuously between schedule waypoints (no block teleport).
+                active_idx = 0
+                for idx, wp in enumerate(DEFAULT_GREEN_WAYPOINTS):
                     if wp[0] <= train_t:
-                        current_wp = wp
+                        active_idx = idx
                     else:
                         break
-                _, section, block, station = current_wp
+
+                cur_t, _cur_sec, cur_block, _cur_station = DEFAULT_GREEN_WAYPOINTS[active_idx]
+                if active_idx < len(DEFAULT_GREEN_WAYPOINTS) - 1:
+                    nxt_t, _nxt_sec, next_block, _nxt_station = DEFAULT_GREEN_WAYPOINTS[active_idx + 1]
+                    seg_dt = max(1.0, float(nxt_t - cur_t))
+                    frac = (train_t - cur_t) / seg_dt
+                    block = _interpolated_block_between_waypoints(
+                        int(cur_block), int(next_block), frac, _GREEN_MAX_BLOCK
+                    )
+                else:
+                    block = int(cur_block)
+
+                section = _GREEN_BLOCK_INFO.get(int(block), ("?", 0.0, 0.0))[0]
+                station = GREEN_BLOCK_STATIONS.get(int(block), "")
                 detail = f"Blk {block}"
                 if station:
                     detail += f" — {station}"
