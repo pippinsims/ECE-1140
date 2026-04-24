@@ -1,6 +1,7 @@
 import sys
 import re
 import math
+import time
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from PyQt6.QtCore import Qt, QRect, QPoint, QTimer
@@ -1370,9 +1371,11 @@ class MainWindow(QMainWindow):
         if self._shared is not None:
             self._wayside_poll_timer.start()
 
-        # ── Header clock timer (local system time) ───────────────────────────
+        # ── Header clock timer (simulation-scaled local time) ────────────────
+        self._sim_clock_dt = datetime.now()
+        self._sim_clock_last_wall = time.monotonic()
         self._header_clock_timer = QTimer(self)
-        self._header_clock_timer.setInterval(1000)
+        self._header_clock_timer.setInterval(100)
         self._header_clock_timer.timeout.connect(self._update_header_clock)
         self._update_header_clock()
         self._header_clock_timer.start()
@@ -1388,8 +1391,23 @@ class MainWindow(QMainWindow):
     # ── Interactions ──────────────────────────────────────────────────────────
 
     def _update_header_clock(self) -> None:
-        """Update header clock to local current time."""
-        self.header_clock_label.setText(datetime.now().strftime("%I:%M:%S %p"))
+        """
+        Update header clock and scale it with simulation speed.
+
+        At slider=10, clock runs at 1x wall-clock.
+        Higher slider values speed it up proportionally.
+        """
+        now_wall = time.monotonic()
+        elapsed_wall_s = max(0.0, now_wall - getattr(self, "_sim_clock_last_wall", now_wall))
+        self._sim_clock_last_wall = now_wall
+
+        try:
+            speed_factor = max(1.0, float(self.speed_slider.value())) / 10.0
+        except Exception:
+            speed_factor = 1.0
+
+        self._sim_clock_dt = self._sim_clock_dt + timedelta(seconds=elapsed_wall_s * speed_factor)
+        self.header_clock_label.setText(self._sim_clock_dt.strftime("%I:%M:%S %p"))
 
     def _suggested_speed_text_for_block(self, line_full: str, section: str, block_num: int) -> str | None:
         """
@@ -1829,12 +1847,13 @@ class MainWindow(QMainWindow):
         # requested arrival target.
         suggested_speed_kmh = (trip_distance_m / max(1.0, wall_remaining_s)) * 3.6
         self._external_trains[train_id]["suggested_speed_kmh"] = round(suggested_speed_kmh, 2)
+        suggested_speed_mph = suggested_speed_kmh * 0.621371
 
         self._poll_active_trains()
         self.info_msg.setText(
             f"{line_short} Line train dispatched: {origin_lbl} → {dest_lbl}. "
             f"Sec {section}, Blk {origin_block}. Arrival at {time_str}. "
-            f"Suggested speed: {suggested_speed_kmh:.1f} km/h."
+            f"Suggested speed: {suggested_speed_mph:.1f} mph."
         )
         self.info_msg.setStyleSheet("color:#333333; font-weight:bold;")
 
