@@ -14,11 +14,9 @@ NONEPEN = QPen(Qt.PenStyle.NoPen) #QPen(QColor("black"),0)
 # Track Model dark theme (local styling only)
 TM_BG = QColor("#0b1020")          # window background
 
-def div(x, y):
-    return int(x/y)
+def div(x, y): return int(x/y)
 
-def to_int(b: bool) -> int:
-    return 1 if b else 0
+def to_int(b: bool) -> int: return 1 if b else 0
 
 def first_int_in(s: str) -> int:
     import re
@@ -30,16 +28,11 @@ def remall(x, l: list) -> list:
         if i == x: c.remove(x)
     return c
 
-def remdupes(l: list) -> list:
-    found = None
-    for i,x in enumerate(l[:-1]):
-        for y in l[i+1:]:
-            if x == y:
-                found = x
-    l = [x for x in l if x != found]
-    return l
-
 def sign(b: bool)->int: return 1 if b else -1
+
+def when_lt (l:list, cond): return [x for x in l if x <  cond]
+def when_not(l:list, cond): return [x for x in l if x != cond]
+def when    (l:list, cond): return [x for x in l if x == cond]
 
 def pixmap(name: str, color: str) -> QPixmap:
     p = QPixmap(f"{os.path.dirname(__file__)}\\{name}.png").scaled(32, 32)
@@ -56,13 +49,9 @@ def pixmap(name: str, color: str) -> QPixmap:
 
 class Block:
     def __init__(self, num, type:str, dir, leng, grade, spdlim):
-        self.num = int(num)
+        self.num = n = int(num)
         self.type = type
-        # Normalize directionality values from CSV so routing logic is consistent.
-        _d = str(dir).strip().lower()
-        if _d in ("bid", "bidir", "bidirectional"):
-            _d = "b"
-        self.directionality = _d
+        self.directionality = str(dir)
         self.grade = float(grade)
         self.is_occupied = False
         self.mylength = float(leng)
@@ -75,64 +64,45 @@ class Block:
         self.dsrptrck = False
         self.nopower = False
 
-        self.up = -1
-        self.lo = -1
         self.next = []
         self.prev = []
 
         #if 3 connections, if missing a neighbor, that is the unknown connection (i think 3way is always missing a neighbor)
         #if 2 connections, the unknown connection is the neighbor on that side (prev <, next >)
         if self.is_switch():
+            #  a[0]
+            #   \ 
+            #    [n]---x
+            #   /
+            #  a[2]
+            # one known is a neighbor. x = the other neighbor
+
             self.switch_state = 0
-            import re
-            a = [int(i) for i in re.findall(r'\d+',self.token("w"))] #array of all digit sequences in token
+            f = self.first_switch_option()
             n = self.num
 
-            if len(a) == 2:
-                if a[0] == n:
-                    self.next = [a[1]]
-                    self.prev = [n-1]
+            if self.is_main_switch():
+                s = self.second_switch_option()
+                other_neighbor = n+1 if n-1 in f+s else n-1
+
+                if f[0] == n: self.next.append(f[1])
+                else:         self.prev.append(f[0])
+                if s[0] == n: 
+                    if len(self.next) == 0: self.next.append("x")
+                    self.next.append(s[1])
                 else:
-                    self.prev = [a[0]]
-                    self.next = [n+1]
-            if len(a) == 4:
-                #  a[0]
-                #   \ 
-                #    [n]---x
-                #   /
-                #  a[2]
-                # one known is a neighbor. x = the other neighbor
-                other_neighbor = n+1 if n-1 in a else n-1
+                    if len(self.prev) == 0: self.prev.append("x")         
+                    self.prev.append(s[0])
 
-                flip = False
-                flipp = False
-
-                if a[1] == n and a[3] == n:
-                    self.prev = remall(n,a)
-                    self.next = [other_neighbor]
-                elif a[0] == n and a[3] == n:
-                    self.next.append(a[1])
-                    self.prev.append(a[2])
-                    if abs(a[1] - n) == 1: 
-                        self.prev.append(other_neighbor)
-                        flip = True
-                    else:
-                        self.next.append(other_neighbor)
-                        flipp = True
-                elif a[1] == n and a[2] == n:
-                    self.next.append(a[3])
-                    self.prev.append(a[0])
-                    if abs(a[3] - n) == 1: 
-                        self.prev.append(other_neighbor)
-                        flip = True
-                    else:
-                        self.next.append(other_neighbor)
-                        flipp = True
-                elif a[0] == n and a[2] == n:
-                    self.next = remall(n,a)
-                    self.prev = [other_neighbor]
+                if f[1] == n and s[1] == n: self.next = [other_neighbor]
+                elif f[0] == n and s[0] == n: self.prev = [other_neighbor]
+                else:
+                    def __fill(l:list,it):
+                        for i,x in enumerate(l): 
+                            if x == "x": l[i] = it
+                    if other_neighbor > n: __fill(self.next, other_neighbor)
+                    else: __fill(self.prev, other_neighbor)
                 
-                #
                 #[5,6,5,11]
                 #   |
                 #  \ /
@@ -145,36 +115,41 @@ class Block:
                 #[self,othr,othr,self]
                 #[othr,self,self,othr]
                 #[othr,self,othr,self]
-            n = self.token("e")
-            if len(n) > 0:
-                self.next = [int(x.strip("e")) for x in n.split(",")]
-                if flip: list.reverse(self.next)
-            p = self.token("p")
-            if len(p) > 0:
-                self.prev = [int(x.strip("p")) for x in p.split(",")]
-                if flipp: list.reverse(self.prev)
+            else:
+                if f[0] == n:
+                    self.next = [f[1]]
+                    self.prev = [n-1]
+                else:
+                    self.prev = [f[0]]
+                    self.next = [n+1]
+
+                    
+            ne = self.token("e")
+            if len(ne) > 0:
+                self.next = [int(x.strip("e")) for x in ne.split(",")]
+            pr = self.token("p")
+            if len(pr) > 0:
+                self.prev = [int(x.strip("p")) for x in pr.split(",")]
+
         else:
             if self.directionality in "+b":
-                self.prev.append(self.num-1)
-                self.next.append(self.num+1)
+                self.prev.append(n-1)
+                self.next.append(n+1)
             else:
-                self.prev.append(self.num+1)
-                self.next.append(self.num-1)
-
-        print(f"{self.num}prev:{self.prev}")
-        print(f"{self.num}next:{self.next}")
+                self.prev.append(n+1)
+                self.next.append(n-1)
         
         if self.has_light(): self.light_state = "green"
-            
         if self.is_crossing(): self.crossing_state = False
-
         if self.is_station(): 
             self.tickets = 0
             self.num_boarding = 0
             self.num_standing = 0
             self.gentickets()
     
-    def tokens           (self) -> list[str]: return self.type.split(";")
+    def tokens(self) -> list[str]: return self.type.split(";")
+    def token(self, c:str) -> str: return ([x for x in self.tokens() if x[0] == c]+[""])[0]
+    
     def is_switch        (self) -> bool: return len(self.token("w")) > 0
     def is_station       (self) -> bool: return len(self.token("t")) > 0
     def is_beacon        (self) -> bool: return len(self.token("b")) > 0
@@ -185,70 +160,31 @@ class Block:
     def is_tunnel        (self) -> bool: return "u" in self.tokens()
 
     def station_name(self) -> str: return self.token("t").split(",")[1]
+    def beacon_data (self) -> str: return self.token("b")[2:]
 
-    def token(self, c:str) -> str: 
-        try: return [x for x in self.tokens() if x[0] == c][0]
-        except: return []
+    #from,to
+    def first_switch_option (self) -> tuple[int,int]: return [int(x) for x in self.token("w")[1:].split(",")[0].split("-")]
+    def second_switch_option(self) -> tuple[int,int]: return [int(x) for x in self.token("w")[1:].split(",")[1].split("-")]
+    def cur_switch_option   (self) -> tuple[int,int]: return [self.first_switch_option(),self.second_switch_option()][self.switch_state]    
 
-    def first_switch_option(self) -> tuple[int,int]: #from,to
-        def guts():
-            tok = self.token("w")[1:]
-            if "," in tok: return tok.split(",")[0].split("-")
-            else: return tok.split("-")
-        return [int(x) for x in guts()]
-    def first(self) -> int: return [x for x in self.first_switch_option() if x != self.num][0]
-    def second_switch_option(self) -> tuple[int,int]: #from,to
-        def guts():
-            tok = self.token("w")[1:]
-            return tok.split(",")[1].split("-")
-        return [int(x) for x in guts()]
-    def second(self) -> int: return [x for x in self.second_switch_option() if x != self.num][0]
+    def first_block (self) -> int: return when_not(self.first_switch_option(), self.num)[0]
+    def second_block(self) -> int: return when_not(self.second_switch_option(),self.num)[0]
+    def cur_block   (self) -> int: return when_not(self.cur_switch_option(),   self.num)[0]
 
-    def cur_switch_option(self):
-        return [self.first_switch_option(),self.second_switch_option()][self.switch_state]
-    def cur(self) -> int: [x for x in self.cur_switch_option() if x != self.num][0]
+    def _chosen_index(self)->int: return (self.next if self.cur_switch_option()[0] == self.num else self.prev).index(self.cur_block())
+    def chosen_next(self) -> int: return self.next[self._chosen_index() if len(self.next) > 1 else 0]
+    def chosen_prev(self) -> int: return self.prev[self._chosen_index() if len(self.prev) > 1 else 0]
 
-    def chosen_next(self):
-        if len(self.next) > 1:
-            check = self.cur()
-            if check in self.next:
-                return check
-            else:
-                unwanted = [x for x in [self.first()]+[self.second()] if x != check][0]
-                return [x for x in self.next if x != unwanted][0]
-        else:
-            return self.next[0]
-
-    def chosen_prev(self):
-        if len(self.prev) > 1:
-            check = self.cur()
-            if check in self.prev: 
-                return check
-            else:
-                unwanted = [x for x in [self.first()]+[self.second()] if x != check][0]
-                return [x for x in self.prev if x != unwanted][0]
-        else:
-            return self.prev[0]
-    
     def gentickets(self):
         import random
         self.num_boarding = random.randint(0,100)
         self.tickets = random.randint(self.num_boarding,100)
         self.num_standing += self.tickets
-        # print(f"there were {self.tickets} more sales!")
-        # print(f"{self.num_standing} are standing")
     
-    def beacondata(self)->str:
-        # return self.type[2:] if self.is_beacon() else None
-        return self.token("b")[2:] if self.is_beacon() else None
-    
-    # def setcard(self, c): self.card = c
     def setx(self, x): self.x = x
     def sety(self, y): self.y = y
-    def occupy(self):
-        self.is_occupied = True
-    def deoccupy(self):
-        self.is_occupied = False
+    def occupy  (self): self.is_occupied = True
+    def deoccupy(self): self.is_occupied = False
 
 class Train:
     def __init__(self, num:int, tkm):
@@ -269,21 +205,17 @@ class Train:
         if self.block.nopower: print("NO POWER TO TRAIN!")
         if self.block.is_station(): self.board()
         if self.block.is_beacon():
-            print(f"block {self.block.num} beacondata:'{self.block.beacondata()}'")
-            self.beacon = self.block.beacondata()
+            print(f"block {self.block.num} beacondata:'{self.block.beacon_data()}'")
+            self.beacon = self.block.beacon_data()
     
     def board(self):
         import random
         r = random.randint(0, self.num_riding)
         self.num_riding -= r
         self.block.num_standing += r
-        # print(f"{r} got off of the train")
-        # print(f"{self.block.num_standing} are standing")
 
         self.block.num_standing -= self.block.num_boarding
         self.num_riding += self.block.num_boarding
-        # print(f"{self.block.num_boarding} got on the train")
-        # print(f"{self.block.num_standing} are standing")
 
         self.block.gentickets()
 
@@ -294,8 +226,6 @@ class Train:
             pass
 
 #TODO test ui should receive the actual output type of the tkc not strings/ints.
-#make TrackMap.build() work for the Green and Red lines
-#CORRECT THE UNITS
 
 class TrackRectItem(QGraphicsRectItem):
     def __init__(self, scene: QGraphicsScene, b: Block):
@@ -349,7 +279,6 @@ class TrackRectItem(QGraphicsRectItem):
             tip   = QPointF(ex, ey)
             head = QGraphicsPolygonItem(QPolygonF([tip, left, right]))
 
-            # Ensure arrows render above the filled block tiles (dark theme).
             head.setZValue(2)
             head.setBrush(QBrush(QColor("#60a5fa")))
             head.setPen(WHITPEN)
@@ -376,21 +305,11 @@ class TrackRectItem(QGraphicsRectItem):
         if self.block.is_main_switch():
             b = self.block
 
-            # print(f"building switch:{b.num}")
-            # print(f"p{b.prev}")
-            # print(f"n{b.next}")
-            # print(f"f{b.first_switch_option()}")
-            # print(f"s{b.second_switch_option()}")
-
             self.text.setX(self.text.x()-10)
             self.text.setY(self.text.y()+20)
 
-            shared = None
-            prevnext = b.prev+b.next
-            for i,x in enumerate(prevnext[:-1]):
-                for y in prevnext[i+1:]:
-                    if x == y:
-                        shared = x #the prevnext duplicate
+            pn=b.prev+b.next
+            shared = [x for i, x in enumerate(pn) if x in pn[:i]][0] if len(pn)==4 else None
             if len(b.next) == 1 or shared == b.num+1:
                 addArrow((1,0),(0,0.5))
                 addArrow((1,1),(0,0.5),True)
@@ -398,7 +317,8 @@ class TrackRectItem(QGraphicsRectItem):
                 addArrow((1,0.5),(0,0))
                 addArrow((1,0.5),(0,1),True)                
 
-            u,d = str(b.first()),str(b.second())
+            def __check(x): return "Y" if x == "0" else x
+            u,d = __check(str(b.first_block())),__check(str(b.second_block()))
 
             def make(it:QGraphicsSimpleTextItem,y):
                 it.setFont(QFont("Segoe UI", 12))
@@ -494,16 +414,17 @@ class TrackMap:
                 b.setx(int(self.width*0.75))
                 b.sety(int(self.height*0.5))
             else:
-                print(b.num)
                 if b.directionality in "+bs": b0 = self.block(min(b.prev))
                 else:                         b0 = self.block(min(b.next))
-                if b0.num == 0:               b0 = self.block([x for x in b.prev if x != 0][0])
+                    
+                if b0.num == 0:               b0 = self.block(when_not(b.prev,0)[0])
                     
                 if b0.is_main_switch():
-                    if   b0.first()  == b.num: b.sety(b0.y-1)
-                    elif b0.second() == b.num: b.sety(b0.y+1)
+                    if   b0.first_block()  == b.num: b.sety(b0.y-1)
+                    elif b0.second_block() == b.num: b.sety(b0.y+1)
                     else:                      b.sety(b0.y)
                 else: 
+                    if b0.num > b.num: b0 = self.blocks[when_lt(b.next+b.prev,b.num)[0]-1] #blocks are read-in in increasing order, if b0 >, need to choose other b0
                     b.sety(b0.y)
                 
                 if (b.directionality in "s+" and b0.directionality == "-") or (b.directionality == "-" and b0.directionality in "s+"):
@@ -554,15 +475,12 @@ class TrackMap:
                     b = t.block
                     if b.is_switch():
                         if b.directionality == "s": 
-                            k = b.first_switch_option() #must be branch if "s"
-                            if k[0] == b.num: c = k[1]
-                            else:             c = b.num+1 #default for "s" seems to be fine to be "+"
+                            frm, to = b.first_switch_option() #must be branch if "s"
+                            if frm == b.num: c = to
+                            else:            c = b.num+1 #default for "s" seems to be fine to be "+"
                         else:
-                            chsn_sw_opt = b.chosen_next(),b.chosen_prev() #to,from
-                            if t.dir == "-": chsn_sw_opt = chsn_sw_opt[::-1]
-                            bad_dir = chsn_sw_opt[0] == t.from_b 
-                            if bad_dir: t.dir = "-" if t.dir == "+" else "+"
-                            c = chsn_sw_opt[to_int(bad_dir)]
+                            c = when_not(b.chosen_prev(),b.chosen_next(),t.from_b)[-to_int(t.dir == "+")]
+                            t.dir = "+" if c == b.chosen_next() else "-"
                         if c == 0:
                             self.trains.remove(t)
                             b.deoccupy()
@@ -656,9 +574,36 @@ class MainWindow(QWidget):
         self.setWindowTitle("Train Track Model")
         self.setMinimumSize(400,400)
         self.tkm = tkm
+        self.track_view_widget = None
         import tkm_testui as tui
         self.testui = tui.TestUI(self)
         self.ui: UIControls = None
+
+    def load_track_model(self, csv_path: str, add_default_trains: bool = True):
+        """Load a new track model from the given CSV file."""
+        try:
+            self.tkm = TrackMap(csv_path)
+            self.tkm.trains.clear()
+            if add_default_trains:
+                self.tkm.trains.append(Train(1, self.tkm))
+                self.tkm.trains.append(Train(2, self.tkm))
+            
+            # Remove old view widget from layout
+            layout = self.layout()
+            if layout and self.track_view_widget:
+                layout.removeWidget(self.track_view_widget)
+                self.track_view_widget.deleteLater()
+            
+            # Add new view widget
+            self.track_view_widget = self.tkm.view()
+            layout.insertWidget(0, self.track_view_widget)
+            
+            # Reset UI selection
+            if self.ui:
+                self.ui.selectedRect = None
+                self.ui.update()
+        except Exception as e:
+            print(f"Error loading track model: {e}")
 
     def closeEvent(self, a0):
         self.testui.hide()
@@ -706,26 +651,44 @@ class UIControls:
             c.stateChanged.connect(occ)
             lay.addWidget(c)
 
+        # File browser button for loading CSV files
+        csv_btn = QPushButton("Load CSV", controls)
+        csv_btn.clicked.connect(self.open_file_browser)
+        
+        # Test UI button
         tui_btn = QPushButton("Test UI", controls); 
         tui_btn.clicked.connect(m.testui.show)
 
+        # Vertical layout for buttons
+        button_layout = QVBoxLayout()
+        button_layout.addWidget(csv_btn)
+        button_layout.addWidget(tui_btn)
+
         hl.addWidget(binfo)
         hl.addLayout(lay)
-        hl.addWidget(tui_btn)
+        hl.addLayout(button_layout)
+
+    def open_file_browser(self):
+        """Open a file browser to select a CSV file and load it."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self.m,
+            "Select CSV Track File",
+            "assets",
+            "CSV Files (*.csv)"
+        )
+        if file_path:
+            # In standalone mode (when testui exists), add default trains
+            add_trains = hasattr(self.m, 'testui') and self.m.testui is not None
+            self.m.load_track_model(file_path, add_default_trains=add_trains)
 
     def display_block(self, b:Block):
-        # Always define a default to avoid UnboundLocalError for unexpected values.
-        dir = str(getattr(b, "directionality", "") or "Unknown")
         if b.directionality == "b": dir = "Bidirectional"
         if b.directionality == "+": dir = "Increasing Block Number"
         if b.directionality == "-": dir = "Decreasing Block Number"
         if b.directionality == "s": 
-            if b.is_main_switch():
-                ops = b.cur_switch_option()
-                dir = f"{ops[0]}→{ops[1]}"
-            else:
-                ops = b.first_switch_option()
-                dir = f"{ops[0]}→{ops[1]}"
+            c = b.cur_switch_option()
+            dir = f"{c[0]}→{c[1]}"
+
         type = "Track"
         if b.is_station() and b.is_main_switch():
             c = b.cur_switch_option()
@@ -738,9 +701,10 @@ class UIControls:
             if b.is_station(): type = f"{b.station_name()} Station, Ticket Sales: {str(b.tickets)}, {str(b.num_boarding)} boarding, {str(b.num_standing)} standing"
         if b.is_crossing(): type = "Track Crossing"
         
-        auth_mi = round(float(b.authority) * 0.621371192, 1) if b.authority else 0
-        spd_mph = round(float(b.speed) * 0.621371192, 1) if b.speed else 0
         lim_mph = round(float(b.speed_limit) * 0.621371192, 1) if b.speed_limit else 0
+        auth_mi = round(float(b.authority)   * 0.621371192, 1) if b.authority   else 0
+        spd_mph = round(float(b.speed)       * 0.621371192, 1) if b.speed       else 0
+        
         self.binfo.setText(
             f"Directionality: {dir}"
             f"\nCommanded Authority: {auth_mi} mi"
@@ -752,22 +716,24 @@ class UIControls:
         )
     
     def update(self):
-        if self.selectedRect: 
-            self.display_block(self.selectedRect.block)
+        r = self.selectedRect
+        if r: 
+            self.display_block(r.block)
             for it in self.m.tkm.items:
                 it.is_selected = False
                 if not it.isUnderMouse(): it.setPen(NONEPEN)
-            self.selectedRect.setPen(PURPPEN)
-            self.selectedRect.is_selected = True
-        for c in [self.chkbrk,self.chkcirc,self.chkpower]: c.setEnabled(self.selectedRect != None)
+            r.setPen(PURPPEN)
+            r.is_selected = True
+        for c in [self.chkbrk,self.chkcirc,self.chkpower]: c.setEnabled(r != None)
 
 def make_widget() -> MainWindow:
-    tkm = TrackMap("assets/greenline.csv")
+    tkm = TrackMap("assets/redline.csv")
     window = MainWindow(tkm)
     window.ui = UIControls(window)
 
     layout = QVBoxLayout(window)
-    layout.addWidget(tkm.view())
+    window.track_view_widget = tkm.view()
+    layout.addWidget(window.track_view_widget)
     layout.addWidget(window.ui.controls)
 
     return window
@@ -780,10 +746,6 @@ def main():
 
     widget.tkm.trains.append(Train(1, widget.tkm))
     widget.tkm.trains.append(Train(2, widget.tkm))
-
-    widget.tkm.blocks[12].switch_state = 1
-    widget.tkm.blocks[56].switch_state = 1
-    widget.tkm.blocks[62].switch_state = 1
 
     def tick():
         widget.tkm.update()

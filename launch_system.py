@@ -288,6 +288,8 @@ def main() -> None:
     train_models: dict[int, TrainSystem] = {}
     model_uis: dict[int, TrainControlUI] = {}
     dispatched: list[str] = []
+    # Track which track_map version we're on to detect CSV reloads
+    _current_track_map_id = id(track_map)
     # manually_dispatched_ids: dict[str, int] = {}
 
     _tile_windows(ctc_win, track_window, [])
@@ -330,7 +332,25 @@ def main() -> None:
     _dest_hold_on: set[int] = set()
 
     def on_tick() -> None:
-        nonlocal conn, recv_buf
+        nonlocal conn, recv_buf, track_map, _current_track_map_id
+        # Refresh track_map reference in case CSV was reloaded
+        track_map = track_window.tkm
+        
+        # Handle CSV reload: reset all train models and dispatch state
+        if id(track_map) != _current_track_map_id:
+            print("[CSV Reload] Clearing train models and dispatch state")
+            _current_track_map_id = id(track_map)
+            # Close all model UI windows
+            for ui in model_uis.values():
+                try:
+                    ui.close()
+                except Exception:
+                    pass
+            train_models.clear()
+            model_uis.clear()
+            dispatched.clear()
+            # Clear trains from new track map (they're spawned by dispatch)
+            track_map.trains = []
 
         try:
             slider = float(ctc_win.speed_slider.value())

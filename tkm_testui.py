@@ -144,6 +144,7 @@ class TestUI(QWidget):
             if swbox:
                 print(f"Block {b.num} switch set to:", switches[tkm.to_int(swbox.isChecked())])
                 b.switch_state = tkm.to_int(swbox.isChecked())
+                print(f"{b.num} switched to {[b.chosen_prev(),b.chosen_next()]}")
             if crbox:
                 print(f"Block {b.num} crossing set to: ", "Active" if crbox.isChecked() else "Non-active")
                 b.crossing_state = crbox.isChecked() 
