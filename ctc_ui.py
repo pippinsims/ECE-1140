@@ -3153,7 +3153,7 @@ def _mw_on_maint_toggled_v2(self, checked: bool) -> None:
     # Push maintenance state to SharedState so Wayside can toggle its own mode
     # Track how many blocks are currently in maintenance per line
     if not hasattr(self, "_maint_lines"):
-        self._maint_lines: set = set()
+        self._maint_lines = set()
 
     if checked:
         self._maint_lines.add(line_short)
