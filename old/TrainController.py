@@ -42,18 +42,18 @@ def card(parent, title="", bg=C["bg_card"], pad=10):
         th = tk.Frame(outer, bg=C["accent_dim"])
         th.pack(fill=tk.X)
         tk.Label(th, text=f"  {title.upper()}", bg=C["accent_dim"],
-                 fg=C["text"], font=("Courier", 8, "bold"),
-                 anchor="w", pady=2).pack(fill=tk.X)
+                 fg=C["text"], font=("Courier", 9, "bold"),
+                 anchor="w", pady=3).pack(fill=tk.X)
     inner = tk.Frame(outer, bg=bg, padx=pad, pady=pad)
     inner.pack(fill=tk.X)
     return inner
 
 def section_title(parent, text):
     f = tk.Frame(parent, bg=C["bg_panel"])
-    f.pack(fill=tk.X, pady=(8, 2))
+    f.pack(fill=tk.X, pady=(10, 2))
     tk.Frame(f, bg=C["accent"], width=4).pack(side=tk.LEFT, fill=tk.Y)
     tk.Label(f, text=f"  {text}", bg=C["bg_panel"], fg=C["accent2"],
-             font=("Courier", 10, "bold")).pack(side=tk.LEFT, pady=3)
+             font=("Courier", 11, "bold")).pack(side=tk.LEFT, pady=4)
 
 def pill_button(parent, text, command, color=C["accent"], fg="white",
                 width=10, font_size=11):
@@ -61,7 +61,7 @@ def pill_button(parent, text, command, color=C["accent"], fg="white",
                      bg=color, fg=fg, activebackground=C["accent2"],
                      activeforeground="white",
                      font=("Courier", font_size, "bold"),
-                     relief=tk.FLAT, bd=0, padx=8, pady=4,
+                     relief=tk.FLAT, bd=0, padx=10, pady=6,
                      cursor="hand2", width=width)
 
 
@@ -73,7 +73,7 @@ class TrainControllerApp:
 
     NUM_TRAINS = 3
 
-    def __init__(self, trains=None, show_test_ui_button=True, ipc_host=None, ipc_port=None, window_title: str | None = None):
+    def __init__(self, trains=None, show_test_ui_button=True, ipc_host=None, ipc_port=None):
         if trains is not None:
             self.trains = list(trains)
             self.NUM_TRAINS = len(self.trains)
@@ -82,7 +82,6 @@ class TrainControllerApp:
         self.active = 0
         self.sim_running = False
         self._show_test_ui_button = bool(show_test_ui_button)
-        self._window_title = window_title or "Train Controller  –  PAAC North Shore"
 
         self._ipc_host = ipc_host
         self._ipc_port = int(ipc_port) if ipc_port is not None else None
@@ -217,23 +216,11 @@ class TrainControllerApp:
 
     def _build_root(self):
         self.root = tk.Tk()
-        self.root.title(self._window_title)
+        self.root.title("Train Controller  –  PAAC North Shore")
         self.root.configure(bg=C["bg_dark"])
-        # Slightly smaller default sizing; layout is designed to fit without scrolling.
-        self.root.geometry("1240x820")
-        self.root.minsize(1080, 720)
+        self.root.geometry("1300x860")
+        self.root.minsize(1100, 760)
         self.root.resizable(True, True)
-
-        # When spawned from the integrated launcher (per-dispatch controller window),
-        # maximize on start so the driver gets full visibility immediately.
-        if str(os.environ.get("TRAIN_FULLSCREEN", "")).strip() == "1":
-            try:
-                self.root.state("zoomed")  # Windows maximize
-            except Exception:
-                try:
-                    self.root.attributes("-zoomed", True)
-                except Exception:
-                    pass
 
     #  header 
 
@@ -245,23 +232,23 @@ class TrainControllerApp:
         logo_f = tk.Frame(hdr, bg=C["accent"], padx=14)
         logo_f.pack(side=tk.LEFT, fill=tk.Y)
         tk.Label(logo_f, text="TC", bg=C["accent"], fg="white",
-                 font=("Courier", 22, "bold")).pack(expand=True)
+                 font=("Courier", 26, "bold")).pack(expand=True)
 
         tk.Label(hdr, text="  TRAIN CONTROLLER", bg=C["bg_header"],
-                 fg="white", font=("Courier", 16, "bold")).pack(side=tk.LEFT, pady=10)
+                 fg="white", font=("Courier", 20, "bold")).pack(side=tk.LEFT, pady=10)
         tk.Label(hdr, text="  PAAC North Shore Extension",
                  bg=C["bg_header"], fg=C["text_dim"],
-                 font=("Courier", 9)).pack(side=tk.LEFT, pady=10)
+                 font=("Courier", 10)).pack(side=tk.LEFT, pady=10)
 
         right = tk.Frame(hdr, bg=C["bg_header"])
         right.pack(side=tk.RIGHT, padx=16, fill=tk.Y)
 
         self.clock_lbl = tk.Label(right, text="00:00:00", bg=C["bg_header"],
-                                   fg=C["accent2"], font=("Courier", 14, "bold"))
+                                   fg=C["accent2"], font=("Courier", 16, "bold"))
         self.clock_lbl.pack(side=tk.TOP, pady=(8, 0))
         if self._show_test_ui_button:
             pill_button(right, "TEST UI", self._open_test_ui,
-                        color=C["accent_dim"], font_size=8, width=8).pack(side=tk.TOP, pady=4)
+                        color=C["accent_dim"], font_size=9, width=8).pack(side=tk.TOP, pady=4)
 
     #  body 
 
@@ -270,23 +257,52 @@ class TrainControllerApp:
         body.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 0))
 
         # LEFT panel
-        # Make left panel wider so right side isn't excessively wide.
-        left = tk.Frame(body, bg=C["bg_panel"], width=640)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, padx=(0, 6))
+        left = tk.Frame(body, bg=C["bg_panel"], width=420)
+        left.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 6))
         left.pack_propagate(False)
 
         self._build_train_tabs(left)
 
-        # No scrolling: fit all driver/engineer controls in one window by using a 2-column layout.
-        self.ctrl_inner = tk.Frame(left, bg=C["bg_panel"])
-        self.ctrl_inner.pack(fill=tk.BOTH, expand=True)
+        ctrl_canvas = tk.Canvas(left, bg=C["bg_panel"], highlightthickness=0)
+        ctrl_scroll = tk.Scrollbar(left, orient="vertical",
+                                    command=ctrl_canvas.yview,
+                                    bg=C["bg_panel"], troughcolor=C["bg_dark"])
+        ctrl_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        ctrl_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        ctrl_canvas.configure(yscrollcommand=ctrl_scroll.set)
+
+        self.ctrl_inner = tk.Frame(ctrl_canvas, bg=C["bg_panel"])
+        ctrl_canvas.create_window((0, 0), window=self.ctrl_inner, anchor="nw")
+        self.ctrl_inner.bind("<Configure>",
+            lambda e: ctrl_canvas.configure(scrollregion=ctrl_canvas.bbox("all")))
+        ctrl_canvas.bind_all("<MouseWheel>",
+            lambda e: ctrl_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
         self._build_controls(self.ctrl_inner)
 
         # RIGHT panel
         right = tk.Frame(body, bg=C["bg_panel"])
         right.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        self.right_inner = tk.Frame(right, bg=C["bg_panel"])
-        self.right_inner.pack(fill=tk.BOTH, expand=True)
+
+        right_canvas = tk.Canvas(right, bg=C["bg_panel"], highlightthickness=0)
+        right_scroll = tk.Scrollbar(right, orient="vertical",
+                                    command=right_canvas.yview,
+                                    bg=C["bg_panel"], troughcolor=C["bg_dark"])
+        right_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        right_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        right_canvas.configure(yscrollcommand=right_scroll.set)
+
+        self.right_inner = tk.Frame(right_canvas, bg=C["bg_panel"])
+        right_canvas.create_window((0, 0), window=self.right_inner, anchor="nw")
+        self.right_inner.bind(
+            "<Configure>",
+            lambda e: right_canvas.configure(scrollregion=right_canvas.bbox("all"))
+        )
+        right_canvas.bind_all(
+            "<MouseWheel>",
+            lambda e: right_canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        )
+
         self._build_right(self.right_inner)
 
     #  train tabs 
@@ -377,31 +393,17 @@ class TrainControllerApp:
     #  left controls 
 
     def _build_controls(self, parent):
-        # Two-column layout so all controls fit without scrolling.
-        cols = tk.Frame(parent, bg=C["bg_panel"])
-        cols.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
-
-        # Make the right column a bit wider (it contains Fault Simulation, Kp/Ki, etc).
-        col_l = tk.Frame(cols, bg=C["bg_panel"])
-        col_r = tk.Frame(cols, bg=C["bg_panel"])
-
-        cols.grid_rowconfigure(0, weight=1)
-        # Keep the left column wide enough so Doors/Lights never clip.
-        cols.grid_columnconfigure(0, weight=1, minsize=310)
-        cols.grid_columnconfigure(1, weight=1, minsize=320)
-        col_l.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        col_r.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         # 1 ── Emergency Brake
-        section_title(col_l, "Emergency Brake")
-        eb_card = card(col_l, bg="#1a0000", pad=10)
+        section_title(parent, "Emergency Brake")
+        eb_card = card(parent, bg="#1a0000", pad=12)
         # Fixed-height container so the button never grows vertically
         eb_btn_frame = tk.Frame(eb_card, bg="#1a0000", height=52)
         eb_btn_frame.pack(fill=tk.X)
         eb_btn_frame.pack_propagate(False)   # <-- this is what stops expansion
         self.ebrake_btn = tk.Button(eb_btn_frame,
             text="🚨  EMERGENCY BRAKE",
-            font=("Courier", 12, "bold"),
+            font=("Courier", 14, "bold"),
             bg=C["accent"], fg="white",
             activebackground="#ff0000",
             relief=tk.FLAT, bd=0,
@@ -410,32 +412,32 @@ class TrainControllerApp:
         self.ebrake_btn.pack(fill=tk.BOTH, expand=True)
         self.ebrake_status = tk.Label(eb_card, text="● INACTIVE",
                                        bg="#1a0000", fg=C["ok"],
-                                       font=("Courier", 9, "bold"))
+                                       font=("Courier", 10, "bold"))
         self.ebrake_status.pack(pady=(6, 0))
 
         # 2 ── Service Brake
-        section_title(col_l, "Service Brake")
-        brk_card = card(col_l, pad=8)
+        section_title(parent, "Service Brake")
+        brk_card = card(parent, pad=10)
         brk_row = tk.Frame(brk_card, bg=C["bg_card"]); brk_row.pack(fill=tk.X)
         tk.Label(brk_row, text="Service Brake", bg=C["bg_card"],
-                 fg=C["text"], font=("Courier", 10)).pack(side=tk.LEFT, padx=4)
+                 fg=C["text"], font=("Courier", 11)).pack(side=tk.LEFT, padx=4)
         self.brake_btn = tk.Button(brk_row, text="  OFF  ",
-                                    font=("Courier", 9, "bold"),
+                                    font=("Courier", 10, "bold"),
                                     bg=C["deselect"], fg=C["text_dim"],
-                                    relief=tk.FLAT, bd=0, padx=8, pady=3,
+                                    relief=tk.FLAT, bd=0, padx=10, pady=4,
                                     cursor="hand2", command=self._on_brake)
         self.brake_btn.pack(side=tk.RIGHT)
 
         # 3 ── Doors  (two independent toggle buttons)
-        section_title(col_l, "Doors")
-        door_card = card(col_l, pad=10)
+        section_title(parent, "Doors")
+        door_card = card(parent, pad=12)
 
         door_status_row = tk.Frame(door_card, bg=C["bg_card"])
         door_status_row.pack(fill=tk.X, pady=(0, 8))
         tk.Label(door_status_row, text="Current:", bg=C["bg_card"],
-                 fg=C["text_dim"], font=("Courier", 8)).pack(side=tk.LEFT)
+                 fg=C["text_dim"], font=("Courier", 9)).pack(side=tk.LEFT)
         self.door_status_lbl = tk.Label(door_status_row, text="🚪  BOTH CLOSED",
-                 bg=C["bg_card"], fg=C["ok"], font=("Courier", 9, "bold"))
+                 bg=C["bg_card"], fg=C["ok"], font=("Courier", 10, "bold"))
         self.door_status_lbl.pack(side=tk.LEFT, padx=8)
 
         door_row = tk.Frame(door_card, bg=C["bg_card"])
@@ -443,32 +445,32 @@ class TrainControllerApp:
 
         self.left_door_btn = tk.Button(door_row,
             text="◀  LEFT DOOR\n🔒  CLOSED",
-            font=("Courier", 10, "bold"),
+            font=("Courier", 11, "bold"),
             bg=C["deselect"], fg=C["text_dim"],
-            relief=tk.FLAT, bd=0, padx=6, pady=10,
+            relief=tk.FLAT, bd=0, padx=6, pady=14,
             width=14, cursor="hand2",
             command=self._toggle_left_door)
         self.left_door_btn.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
 
         self.right_door_btn = tk.Button(door_row,
             text="RIGHT DOOR  ▶\n🔒  CLOSED",
-            font=("Courier", 10, "bold"),
+            font=("Courier", 11, "bold"),
             bg=C["deselect"], fg=C["text_dim"],
-            relief=tk.FLAT, bd=0, padx=6, pady=10,
+            relief=tk.FLAT, bd=0, padx=6, pady=14,
             width=14, cursor="hand2",
             command=self._toggle_right_door)
         self.right_door_btn.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
 
         # 4 ── Lights  (two independent toggle buttons)
-        section_title(col_l, "Lights")
-        light_card = card(col_l, pad=10)
+        section_title(parent, "Lights")
+        light_card = card(parent, pad=12)
 
         light_status_row = tk.Frame(light_card, bg=C["bg_card"])
         light_status_row.pack(fill=tk.X, pady=(0, 8))
         tk.Label(light_status_row, text="Current:", bg=C["bg_card"],
-                 fg=C["text_dim"], font=("Courier", 8)).pack(side=tk.LEFT)
+                 fg=C["text_dim"], font=("Courier", 9)).pack(side=tk.LEFT)
         self.light_status_lbl = tk.Label(light_status_row, text="All OFF",
-                 bg=C["bg_card"], fg=C["text_dim"], font=("Courier", 9, "bold"))
+                 bg=C["bg_card"], fg=C["text_dim"], font=("Courier", 10, "bold"))
         self.light_status_lbl.pack(side=tk.LEFT, padx=8)
 
         light_row = tk.Frame(light_card, bg=C["bg_card"])
@@ -476,32 +478,32 @@ class TrainControllerApp:
 
         self.ext_light_btn = tk.Button(light_row,
             text="🔦  EXTERNAL\n●  OFF",
-            font=("Courier", 10, "bold"),
+            font=("Courier", 11, "bold"),
             bg=C["deselect"], fg=C["text_dim"],
-            relief=tk.FLAT, bd=0, padx=6, pady=10,
+            relief=tk.FLAT, bd=0, padx=6, pady=14,
             width=14, cursor="hand2",
             command=self._toggle_ext_light)
         self.ext_light_btn.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
 
         self.int_light_btn = tk.Button(light_row,
             text="🏠  INTERNAL\n●  OFF",
-            font=("Courier", 10, "bold"),
+            font=("Courier", 11, "bold"),
             bg=C["deselect"], fg=C["text_dim"],
-            relief=tk.FLAT, bd=0, padx=6, pady=10,
+            relief=tk.FLAT, bd=0, padx=6, pady=14,
             width=14, cursor="hand2",
             command=self._toggle_int_light)
         self.int_light_btn.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
 
         # 5 ── Cabin Temperature (AC)
-        section_title(col_r, "Cabin Temperature (AC)")
-        temp_card = card(col_r, pad=8)
+        section_title(parent, "Cabin Temperature (AC)")
+        temp_card = card(parent, pad=10)
         temp_row = tk.Frame(temp_card, bg=C["bg_card"]); temp_row.pack(fill=tk.X)
         tk.Label(temp_row, text="Setpoint (°F):", bg=C["bg_card"],
-                 fg=C["text"], font=("Courier", 9)).pack(side=tk.LEFT, padx=4)
+                 fg=C["text"], font=("Courier", 10)).pack(side=tk.LEFT, padx=4)
         self.temp_lbl = tk.Label(temp_row,
                                  text="70.0",
                                  bg=C["bg_dark"], fg=C["text_lcd"],
-                                 font=("Courier", 11, "bold"), width=6)
+                                 font=("Courier", 12, "bold"), width=6)
         self.temp_lbl.pack(side=tk.LEFT, padx=4)
         pill_button(temp_row, "−", lambda: self._nudge_temp(-1.0),
                     width=3, font_size=9).pack(side=tk.LEFT, padx=2)
@@ -509,13 +511,13 @@ class TrainControllerApp:
                     width=3, font_size=9).pack(side=tk.LEFT, padx=2)
 
         # 6 ── Operation Mode
-        section_title(col_r, "Operation Mode")
-        mode_card = card(col_r, pad=8)
+        section_title(parent, "Operation Mode")
+        mode_card = card(parent, pad=10)
         mode_row = tk.Frame(mode_card, bg=C["bg_card"]); mode_row.pack(fill=tk.X)
         self.mode_btns = {}
         for txt, val, col in [("🤖  AUTO","Auto","#006600"),("👤  MANUAL","Manual",C["accent"])]:
             b = tk.Button(mode_row, text=txt,
-                          font=("Courier", 10, "bold"),
+                          font=("Courier", 11, "bold"),
                           bg=col if val=="Auto" else C["deselect"],
                           fg="white" if val=="Auto" else C["text_dim"],
                           relief=tk.FLAT, bd=0, padx=8, pady=8,
@@ -525,14 +527,14 @@ class TrainControllerApp:
             self.mode_btns[val] = b
 
         # 6 ── Set Speed
-        section_title(col_r, "Set Speed  (Manual)")
-        spd_card = card(col_r, pad=8)
+        section_title(parent, "Set Speed  (Manual)")
+        spd_card = card(parent, pad=10)
         spd_row = tk.Frame(spd_card, bg=C["bg_card"]); spd_row.pack(fill=tk.X)
         tk.Label(spd_row, text="Target (mph):", bg=C["bg_card"],
-                 fg=C["text"], font=("Courier", 9)).pack(side=tk.LEFT, padx=4)
+                 fg=C["text"], font=("Courier", 10)).pack(side=tk.LEFT, padx=4)
         self.manual_spd_var = tk.StringVar(value="0")
         tk.Entry(spd_row, textvariable=self.manual_spd_var,
-                 font=("Courier", 11, "bold"), width=6,
+                 font=("Courier", 12, "bold"), width=6,
                  bg=C["bg_dark"], fg=C["text_lcd"],
                  insertbackground=C["accent"],
                  relief=tk.FLAT, bd=1, justify="center"
@@ -541,16 +543,16 @@ class TrainControllerApp:
                     width=6, font_size=10).pack(side=tk.LEFT)
 
         # 7 ── Train Engineer (Kp / Ki)
-        section_title(col_r, "Train Engineer  (Kp / Ki)")
-        eng_card = card(col_r, pad=8)
+        section_title(parent, "Train Engineer  (Kp / Ki)")
+        eng_card = card(parent, pad=10)
         for label, attr_e, attr_d, default, cmd in [
             ("Kp:", "kp_entry", "kp_disp", "10.0",   self._on_kp),
             ("Ki:", "ki_entry", "ki_disp", "8000.0",  self._on_ki),
         ]:
             row = tk.Frame(eng_card, bg=C["bg_card"]); row.pack(fill=tk.X, pady=3)
             tk.Label(row, text=label, bg=C["bg_card"], fg=C["text"],
-                     font=("Courier", 9), width=4).pack(side=tk.LEFT)
-            ent = tk.Entry(row, font=("Courier", 10, "bold"), width=9,
+                     font=("Courier", 10), width=4).pack(side=tk.LEFT)
+            ent = tk.Entry(row, font=("Courier", 11, "bold"), width=9,
                            bg=C["bg_dark"], fg=C["text_lcd"],
                            insertbackground=C["accent"],
                            relief=tk.FLAT, bd=1, justify="center")
@@ -559,30 +561,30 @@ class TrainControllerApp:
             setattr(self, attr_e, ent)
             pill_button(row, "SET", cmd, width=5, font_size=9).pack(side=tk.LEFT, padx=4)
             disp = tk.Label(row, text=f"= {default}", bg=C["bg_card"],
-                             fg=C["ok"], font=("Courier", 8))
+                             fg=C["ok"], font=("Courier", 9))
             disp.pack(side=tk.LEFT, padx=4)
             setattr(self, attr_d, disp)
 
         # 8 ── Fault Simulation
-        section_title(col_r, "Fault Simulation  (Testing)")
-        fault_sim = card(col_r, pad=8)
+        section_title(parent, "Fault Simulation  (Testing)")
+        fault_sim = card(parent, pad=10)
         fsrow = tk.Frame(fault_sim, bg=C["bg_card"]); fsrow.pack(fill=tk.X)
         self.pwr_sim_btn = pill_button(fsrow, "⚡ Power",
-            lambda: self._sim_fault("power"), color="#994400", width=10, font_size=9)
-        self.pwr_sim_btn.pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+            lambda: self._sim_fault("power"), color="#994400", width=9, font_size=9)
+        self.pwr_sim_btn.pack(side=tk.LEFT, padx=2)
         self.brk_sim_btn = pill_button(fsrow, "🛑 Brake",
-            lambda: self._sim_fault("brake"), color="#994400", width=10, font_size=9)
-        self.brk_sim_btn.pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+            lambda: self._sim_fault("brake"), color="#994400", width=9, font_size=9)
+        self.brk_sim_btn.pack(side=tk.LEFT, padx=2)
         self.sig_sim_btn = pill_button(fsrow, "📡 Signal",
-            lambda: self._sim_fault("signal"), color="#994400", width=10, font_size=9)
-        self.sig_sim_btn.pack(side=tk.LEFT, padx=2, expand=True, fill=tk.X)
+            lambda: self._sim_fault("signal"), color="#994400", width=9, font_size=9)
+        self.sig_sim_btn.pack(side=tk.LEFT, padx=2)
 
         # 9 ── Simulation button
-        sep(col_r)
-        sim_f = tk.Frame(col_r, bg=C["bg_panel"]); sim_f.pack(fill=tk.X, pady=6, padx=6)
+        sep(parent)
+        sim_f = tk.Frame(parent, bg=C["bg_panel"]); sim_f.pack(fill=tk.X, pady=6, padx=6)
         self.sim_btn = tk.Button(sim_f,
             text="▶  START SIMULATION",
-            font=("Courier", 11, "bold"),
+            font=("Courier", 12, "bold"),
             bg="#005500", fg="white",
             activebackground="#008800",
             relief=tk.FLAT, bd=0, pady=10,
@@ -602,42 +604,28 @@ class TrainControllerApp:
             mc["frame"].pack(side=tk.LEFT, expand=True, fill=tk.X, padx=3)
             self.mini_cards.append(mc)
 
-        # Two-column right panel: outputs on the left, status/faults/ads on the right.
-        rp = tk.Frame(parent, bg=C["bg_panel"])
-        rp.pack(fill=tk.BOTH, expand=True)
-        rp_l = tk.Frame(rp, bg=C["bg_panel"])
-        rp_r = tk.Frame(rp, bg=C["bg_panel"])
-        # Make the Driver Outputs column (rp_l) a bit smaller so the left panel
-        # has room for the engineer controls without clipping.
-        rp.grid_rowconfigure(0, weight=1)
-        rp.grid_columnconfigure(0, weight=3, minsize=420)
-        rp.grid_columnconfigure(1, weight=2, minsize=260)
-        rp_l.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        rp_r.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-
-        # driver outputs (left column)
-        section_title(rp_l, "Driver Outputs Display")
-        out_card = tk.Frame(rp_l, bg=C["bg_card"], pady=8)
-        out_card.pack(fill=tk.BOTH, expand=True, padx=4)
+        # driver outputs
+        section_title(parent, "Driver Outputs Display")
+        out_card = tk.Frame(parent, bg=C["bg_card"], pady=10)
+        out_card.pack(fill=tk.X, padx=4)
         out_grid = tk.Frame(out_card, bg=C["bg_card"])
-        out_grid.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        out_grid.pack(fill=tk.X, expand=True, padx=10, pady=6)
 
         def _out_row(row, label, label_bg, attr, unit=""):
-            # Tighten horizontal layout so nothing clips on smaller screens.
-            lf = tk.Frame(out_grid, bg=label_bg, padx=7, pady=6)
-            lf.grid(row=row, column=0, padx=(5, 3), pady=4, sticky="ew")
+            lf = tk.Frame(out_grid, bg=label_bg, padx=10, pady=8)
+            lf.grid(row=row, column=0, padx=6, pady=5, sticky="ew")
             tk.Label(lf, text=label, bg=label_bg, fg="white",
-                     font=("Courier", 10, "bold"),
-                     anchor="w").pack(fill=tk.X)
-            val_f = tk.Frame(out_grid, bg=C["bg_dark"], padx=4, pady=3)
-            val_f.grid(row=row, column=1, padx=(3, 4), pady=4, sticky="ew")
+                     font=("Courier", 13, "bold"),
+                     anchor="center").pack()
+            val_f = tk.Frame(out_grid, bg=C["bg_dark"], padx=4, pady=4)
+            val_f.grid(row=row, column=1, padx=6, pady=5, sticky="ew")
             val_lbl = tk.Label(val_f, text="–", bg="#0a0000", fg=C["text_lcd"],
-                                font=("Courier", 13, "bold"),
-                                anchor="e", padx=8)
+                                font=("Courier", 18, "bold"),
+                                anchor="e", padx=10)
             val_lbl.pack(fill=tk.X, expand=True)
             tk.Label(out_grid, text=unit, bg=C["bg_card"],
-                     fg=C["text_dim"], font=("Courier", 9)
-                     ).grid(row=row, column=2, padx=(3, 0), pady=4, sticky="w")
+                     fg=C["text_dim"], font=("Courier", 10)
+                     ).grid(row=row, column=2, padx=4)
             setattr(self, attr, val_lbl)
 
         _out_row(0, "Actual Speed",   "#5a0000",  "disp_actual_spd",  "mph")
@@ -649,35 +637,34 @@ class TrainControllerApp:
         _out_row(6, "Passengers",     "#003050",  "disp_passengers",  "pax")
         _out_row(7, "Next Station",   "#1a1a3a",  "disp_next_station","")
         _out_row(8, "Power Command",  "#003a00",  "disp_power",       "W")
-        # Make the label column less greedy so the panel is narrower overall.
-        out_grid.columnconfigure(0, weight=0, minsize=135)
-        out_grid.columnconfigure(1, weight=1)
-        out_grid.columnconfigure(2, weight=0, minsize=36)
+        out_grid.columnconfigure(0, weight=1, uniform="out")
+        out_grid.columnconfigure(1, weight=2, uniform="out")
+        out_grid.columnconfigure(2, weight=0)
 
-        # fault indicators (right column)
-        section_title(rp_r, "Fault Indicators")
-        fault_card = card(rp_r, pad=10)
+        # fault indicators
+        section_title(parent, "Fault Indicators")
+        fault_card = card(parent, pad=12)
         fault_row = tk.Frame(fault_card, bg=C["bg_card"]); fault_row.pack(fill=tk.X)
         self.fault_lbls = {}
         for fname in ["Power Fault", "Brake Fault", "Signal Fault"]:
             key = fname.split()[0].lower()
             col = tk.Frame(fault_row, bg=C["bg_card"]); col.pack(side=tk.LEFT, expand=True)
             icon = tk.Label(col, text="●", bg=C["bg_card"], fg=C["text_dim"],
-                             font=("Courier", 18, "bold"))
+                             font=("Courier", 22, "bold"))
             icon.pack()
             tk.Label(col, text=fname, bg=C["bg_card"], fg=C["text_dim"],
-                     font=("Courier", 8)).pack()
+                     font=("Courier", 9)).pack()
             self.fault_lbls[key] = icon
 
-        # system status (right column)
-        section_title(rp_r, "System Status")
-        stat_card = card(rp_r, pad=10)
+        # system status
+        section_title(parent, "System Status")
+        stat_card = card(parent, pad=10)
         stat_row = tk.Frame(stat_card, bg=C["bg_card"]); stat_row.pack(fill=tk.X)
         for label, attr in [("Mode","stat_mode"),("Doors","stat_doors"),
                               ("Lights","stat_lights"),("E-Brake","stat_ebrake")]:
             col = tk.Frame(stat_row, bg=C["bg_card"]); col.pack(side=tk.LEFT, expand=True)
             tk.Label(col, text=label, bg=C["bg_card"], fg=C["text_dim"],
-                     font=("Courier", 8)).pack()
+                     font=("Courier", 9)).pack()
             # clearer defaults instead of dashes
             if label == "Mode":
                 default_text = "AUTO"
@@ -688,19 +675,19 @@ class TrainControllerApp:
             else:  # E-Brake
                 default_text = "OFF"
             lbl = tk.Label(col, text=default_text, bg=C["bg_card"], fg=C["ok"],
-                            font=("Courier", 9, "bold"))
+                            font=("Courier", 10, "bold"))
             lbl.pack()
             setattr(self, attr, lbl)
 
         # ads / announcements (match Train Model UI placeholder)
-        section_title(rp_r, "Advertisements")
-        ads_card = card(rp_r, pad=10)
+        section_title(parent, "Advertisements")
+        ads_card = card(parent, pad=10)
         ads_row = tk.Frame(ads_card, bg=C["bg_card"])
         ads_row.pack(fill=tk.X, padx=6, pady=6)
         ads_lbl = tk.Label(ads_row,
                            text="[ Ad Content Placeholder ]",
                            bg=C["bg_card"], fg=C["accent2"],
-                           font=("Courier", 10), anchor="center")
+                           font=("Courier", 11), anchor="center")
         ads_lbl.pack(fill=tk.X, padx=8, pady=6)
 
     #  mini card 
@@ -708,15 +695,15 @@ class TrainControllerApp:
     def _make_mini_card(self, parent, idx):
         f = tk.Frame(parent, bg=C["bg_card"], padx=8, pady=8)
         tk.Label(f, text=f"TRAIN {idx+1}", bg=C["bg_card"],
-                 fg=C["accent2"], font=("Courier", 8, "bold")).pack(anchor="w")
+                 fg=C["accent2"], font=("Courier", 9, "bold")).pack(anchor="w")
         spd = tk.Label(f, text="0.0 mph", bg=C["bg_card"],
-                       fg=C["text_lcd"], font=("Courier", 10, "bold"))
+                       fg=C["text_lcd"], font=("Courier", 11, "bold"))
         spd.pack(anchor="w")
         sta = tk.Label(f, text="YARD", bg=C["bg_card"],
-                       fg=C["text_dim"], font=("Courier", 7))
+                       fg=C["text_dim"], font=("Courier", 8))
         sta.pack(anchor="w")
         fl = tk.Label(f, text="OK", bg=C["bg_card"], fg=C["ok"],
-                      font=("Courier", 7, "bold"))
+                      font=("Courier", 8, "bold"))
         fl.pack(anchor="w")
         return {"frame": f, "spd": spd, "sta": sta, "fl": fl}
 
@@ -728,12 +715,12 @@ class TrainControllerApp:
         bar.pack_propagate(False)
         self.status_lbl = tk.Label(bar, text="●  System Ready  –  Auto Mode",
                                     bg="#0a0000", fg=C["ok"],
-                                    font=("Courier", 9, "bold"),
+                                    font=("Courier", 10, "bold"),
                                     anchor="w", padx=14)
         self.status_lbl.pack(side=tk.LEFT, fill=tk.Y)
         self.status_lbl2 = tk.Label(bar, text="",
                                      bg="#0a0000", fg=C["text_dim"],
-                                     font=("Courier", 8), anchor="e", padx=14)
+                                     font=("Courier", 9), anchor="e", padx=14)
         self.status_lbl2.pack(side=tk.RIGHT, fill=tk.Y)
 
     #  EVENT HANDLERS
@@ -1238,26 +1225,8 @@ class TrainControllerApp:
 if __name__ == "__main__":
     ipc_host = os.environ.get("TRAIN_IPC_HOST")
     ipc_port = os.environ.get("TRAIN_IPC_PORT")
-    train_id_env = os.environ.get("TRAIN_ID")
     if ipc_port:
-        if train_id_env:
-            try:
-                tid = int(train_id_env)
-            except Exception:
-                tid = 1
-            app = TrainControllerApp(
-                trains=[TrainController(tid)],
-                show_test_ui_button=False,
-                ipc_host=ipc_host or "127.0.0.1",
-                ipc_port=int(ipc_port),
-                window_title=f"Train Controller — Train {tid}",
-            )
-        else:
-            app = TrainControllerApp(
-                show_test_ui_button=False,
-                ipc_host=ipc_host or "127.0.0.1",
-                ipc_port=int(ipc_port),
-            )
+        app = TrainControllerApp(show_test_ui_button=False, ipc_host=ipc_host or "127.0.0.1", ipc_port=int(ipc_port))
     else:
         app = TrainControllerApp()
     app.run()

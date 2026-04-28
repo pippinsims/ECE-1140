@@ -320,8 +320,7 @@ def main() -> None:
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind(("127.0.0.1", 0))
-    # Multiple Train Controller windows connect in integrated mode.
-    server.listen(16)
+    server.listen(1)
     server.setblocking(False)
     port = server.getsockname()[1]
 
@@ -329,34 +328,24 @@ def main() -> None:
     env["TRAIN_IPC_HOST"] = "127.0.0.1"
     env["TRAIN_IPC_PORT"] = str(port)
 
+    controller_proc = None
     controller_script = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "TrainController.py"
     )
-    controller_procs: list[subprocess.Popen] = []
-
-    def _spawn_controller_window(train_id: int) -> None:
-        if not os.path.exists(controller_script):
-            return
-        tenv = env.copy()
-        tenv["TRAIN_ID"] = str(int(train_id))
-        # In integrated mode, open each dispatched Train Controller maximized.
-        tenv["TRAIN_FULLSCREEN"] = "1"
-        # One controller window per train (one-process-per-window).
-        controller_procs.append(
-            subprocess.Popen([sys.executable, controller_script], env=tenv)
-        )
+    if os.path.exists(controller_script):
+        controller_proc = subprocess.Popen([sys.executable, controller_script], env=env)
 
     def _cleanup() -> None:
-        for p in list(controller_procs):
+        if controller_proc is not None:
             try:
-                p.terminate()
+                controller_proc.terminate()
             except Exception:
                 pass
 
     atexit.register(_cleanup)
 
-    conns: list[socket.socket] = []
-    recv_bufs: dict[socket.socket, str] = {}
+    conn = None
+    recv_buf = ""
     last_authority_block: dict[int, tuple] = {}
     # Keep train motion smooth across block boundaries even when CTC snapshot doesn't contain the next block yet.
     _last_cmd_kmh: dict[int, float] = {}
@@ -369,7 +358,7 @@ def main() -> None:
     _despawn_flags: dict[str, bool] = {}
 
     def on_tick() -> None:
-        nonlocal conns, recv_bufs
+        nonlocal conn, recv_buf
 
         try:
             slider = float(ctc_win.speed_slider.value())
@@ -421,7 +410,6 @@ def main() -> None:
                 pass
             track_map.trains.append(t)
             dispatched.append(new_dispatch)
-            _spawn_controller_window(new_t_id)
             ext[f"Train-{new_t_id}"] = {
                 **(ext.get(f"Train-{new_t_id}", {}) or {}),
                 "line":       info.get("line", "Green Line"),
@@ -496,7 +484,6 @@ def main() -> None:
             track_map.trains.append(t)
 
             dispatched.append(new_dispatch)
-            _spawn_controller_window(new_t_id)
             ctc_win._external_trains[new_dispatch] = {
                 **info,
                 "line":    "Green Line",
@@ -710,115 +697,101 @@ def main() -> None:
                 m.isTrackPowerLost = td["power_lost"]
                 m.boardingPassengerCount = td["boarding_passengers"]
 
-        # Accept any newly started controller connections.
-        while True:
+        if conn is None:
             try:
-                new_conn, _ = server.accept()
-                new_conn.setblocking(False)
-                conns.append(new_conn)
-                recv_bufs[new_conn] = ""
+                conn, _ = server.accept()
+                conn.setblocking(False)
             except BlockingIOError:
-                break
+                pass
             except Exception:
-                break
+                pass
 
-        # Consume controller inputs from each connected controller window.
-        for s in list(conns):
-            try:
-                while True:
-                    try:
-                        data = s.recv(4096)
-                        if not data:
-                            try:
-                                s.close()
-                            except Exception:
-                                pass
-                            conns.remove(s)
-                            recv_bufs.pop(s, None)
-                            break
-                        recv_bufs[s] = (recv_bufs.get(s, "") + data.decode("utf-8", errors="ignore"))
-                    except BlockingIOError:
+        if conn is not None:
+            while True:
+                try:
+                    data = conn.recv(4096)
+                    if not data:
+                        conn.close()
+                        conn = None
                         break
-
-                buf = recv_bufs.get(s, "")
-                while "\n" in buf:
-                    line, buf = buf.split("\n", 1)
-                    if not line.strip():
-                        continue
+                    recv_buf += data.decode("utf-8", errors="ignore")
+                except BlockingIOError:
+                    break
+                except Exception:
                     try:
-                        msg = json.loads(line)
+                        conn.close()
                     except Exception:
-                        continue
-                    if msg.get("type") != "controller":
-                        continue
-                    tid = int(msg.get("train_id", 1))
-                    sys_obj = train_models.get(tid)
-                    if sys_obj is None:
-                        continue
-                    c = sys_obj.controller
-                    for k, cast in [
-                        ("commanded_speed", float),
-                        ("speed_limit", float),
-                        ("authority", float),
-                        ("kp", float),
-                        ("ki", float),
-                        ("manual_speed_target", float),
-                    ]:
-                        if k in msg:
-                            try:
-                                setattr(c, k, cast(msg[k]))
-                            except Exception:
-                                pass
-                    for k in [
-                        "emergency_brake",
-                        "service_brake",
-                        "headlights",
-                        "fault_power",
-                        "fault_brake",
-                        "fault_signal",
-                        "automatic_mode",
-                    ]:
-                        if k in msg:
-                            try:
-                                setattr(c, k, bool(msg[k]))
-                            except Exception:
-                                pass
-                    if "interior_lights" in msg:
-                        try:
-                            c.interior_lights = int(msg["interior_lights"])
-                        except Exception:
-                            pass
-                    if "doors_state" in msg:
-                        try:
-                            c.doors_state = int(msg["doors_state"])
-                        except Exception:
-                            pass
-                    if "cabin_temp" in msg:
-                        try:
-                            c.cabin_temp = float(msg["cabin_temp"])
-                        except Exception:
-                            pass
-                    if "passengers" in msg:
-                        try:
-                            c.passengers = int(msg["passengers"])
-                        except Exception:
-                            pass
-                    if "next_station" in msg:
-                        try:
-                            c.next_station = str(msg["next_station"])
-                        except Exception:
-                            pass
-                recv_bufs[s] = buf
-            except Exception:
+                        pass
+                    conn = None
+                    break
+
+            while conn is not None and "\n" in recv_buf:
+                line, recv_buf = recv_buf.split("\n", 1)
+                if not line.strip():
+                    continue
                 try:
-                    s.close()
+                    msg = json.loads(line)
                 except Exception:
-                    pass
-                try:
-                    conns.remove(s)
-                except Exception:
-                    pass
-                recv_bufs.pop(s, None)
+                    continue
+                if msg.get("type") != "controller":
+                    continue
+                tid = int(msg.get("train_id", 1))
+                sys_obj = train_models.get(tid)
+                if sys_obj is None:
+                    continue
+                c = sys_obj.controller
+                for k, cast in [
+                    ("commanded_speed", float),
+                    ("speed_limit", float),
+                    ("authority", float),
+                    ("kp", float),
+                    ("ki", float),
+                    ("manual_speed_target", float),
+                ]:
+                    if k in msg:
+                        try:
+                            setattr(c, k, cast(msg[k]))
+                        except Exception:
+                            pass
+                for k in [
+                    "emergency_brake",
+                    "service_brake",
+                    "headlights",
+                    "fault_power",
+                    "fault_brake",
+                    "fault_signal",
+                    "automatic_mode",
+                ]:
+                    if k in msg:
+                        try:
+                            setattr(c, k, bool(msg[k]))
+                        except Exception:
+                            pass
+                if "interior_lights" in msg:
+                    try:
+                        c.interior_lights = int(msg["interior_lights"])
+                    except Exception:
+                        pass
+                if "doors_state" in msg:
+                    try:
+                        c.doors_state = int(msg["doors_state"])
+                    except Exception:
+                        pass
+                if "cabin_temp" in msg:
+                    try:
+                        c.cabin_temp = float(msg["cabin_temp"])
+                    except Exception:
+                        pass
+                if "passengers" in msg:
+                    try:
+                        c.passengers = int(msg["passengers"])
+                    except Exception:
+                        pass
+                if "next_station" in msg:
+                    try:
+                        c.next_station = str(msg["next_station"])
+                    except Exception:
+                        pass
 
         for system in train_models.values():
             system.tick(dt=physics_dt)
@@ -907,9 +880,8 @@ def main() -> None:
         except Exception:
             pass
 
-        if conns:
+        if conn is not None:
             try:
-                payloads: list[bytes] = []
                 for train_id, system in train_models.items():
                     m = system.model
                     feedback = {
@@ -930,23 +902,13 @@ def main() -> None:
                         "fault_signal": bool(system.controller.fault_signal),
                         "next_station": str(system.controller.next_station),
                     }
-                    payloads.append((json.dumps(feedback) + "\n").encode("utf-8"))
-                for s in list(conns):
-                    try:
-                        for data in payloads:
-                            s.sendall(data)
-                    except Exception:
-                        try:
-                            s.close()
-                        except Exception:
-                            pass
-                        try:
-                            conns.remove(s)
-                        except Exception:
-                            pass
-                        recv_bufs.pop(s, None)
+                    conn.sendall((json.dumps(feedback) + "\n").encode("utf-8"))
             except Exception:
-                pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
 
     sim_timer = QTimer()
     sim_timer.timeout.connect(on_tick)

@@ -1,7 +1,6 @@
 # ai was used to help with code development logic and structure
 
 import math
-import random
 
 #pulled from provided specsheet
 samplePeriodSec             = 0.1      # 100 ms tick to update 
@@ -69,11 +68,6 @@ class TrainModel:
         self.onboardPassengers  = 0
         self.approachingStation = ""
 
-        # Passenger exchange (station events)
-        self.lastBoardedCount = 0
-        self.lastDeboardedCount = 0
-        self._prev_boarding_count = 0
-
         # previous step value needed for trapezoidal integration
         self._prevVelocityMps = 0.0
         self._prevAccelMps2   = 0.0
@@ -139,22 +133,9 @@ class TrainModel:
         self.distanceTraveledKm += distanceDeltaM / 1000.0
         self.commandedAuthorityKm = max(0.0, self.commandedAuthorityKm - distanceDeltaM / 1000.0)
 
-        # Passenger exchange:
-        # Track Model provides `boardingPassengerCount` when at a station.
-        # Apply boarding + random deboarding ONCE per station stop (rising edge).
-        bc = int(self.boardingPassengerCount or 0)
-        if bc > 0 and int(self._prev_boarding_count) <= 0:
-            # Deboard cannot exceed onboard passengers.
-            deboard = 0
-            if int(self.onboardPassengers) > 0:
-                deboard = random.randint(0, int(self.onboardPassengers))
-            self.lastBoardedCount = bc
-            self.lastDeboardedCount = deboard
-            self.onboardPassengers = max(0, int(self.onboardPassengers) - int(deboard) + int(bc))
-        self._prev_boarding_count = bc
-
         # update state for this tick
         self.currentSpeedKmh        = newVelocityMps * 3.6
+        self.onboardPassengers     += self.boardingPassengerCount
         self.boardingPassengerCount  = 0
         self.elapsedTimeSec        += dt
         self._prevVelocityMps       = newVelocityMps
@@ -294,12 +275,8 @@ class TrainSystem:
 
         m.cabinTemperatureC = fToC(float(getattr(c, "cabin_temp", cToF(m.cabinTemperatureC))))
 
-        # Passengers are owned by the Train Model (Track Model boards; Train Model deboads).
-        # The controller UI should display the model's value, not overwrite it.
-        try:
-            c.passengers = int(m.onboardPassengers)
-        except Exception:
-            pass
+        m.onboardPassengers = int(getattr(c, "passengers", m.onboardPassengers))
+        m.boardingPassengerCount = 0
 
         beacon_str = (m.beaconData or "").strip()
         c.next_station = beacon_str

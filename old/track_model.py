@@ -534,9 +534,6 @@ class TrackMap:
         self.height, self.width = 10, 20
         import csv
         csv_table = []
-        # Allow callers to pass a relative path regardless of current working directory.
-        if not os.path.isabs(filename):
-            filename = os.path.normpath(os.path.join(os.path.dirname(__file__), filename))
         with open(filename, newline="") as f:
             for row in csv.reader(f):
                 csv_table.append(tuple(row[:6]))
