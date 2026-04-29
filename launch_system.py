@@ -1,0 +1,1043 @@
+"""
+launch_system.py — single entry point for the full integrated stack
+===================================================================
+Starts in one process (one QApplication):
+
+  • Central Traffic Control (PyQt6)
+  • Train Track Model + Train Model UIs (PyQt6)
+  • Train Controller backend + Train Controller UI subprocess (socket IPC)
+
+Starts in a daemon thread:
+
+  • Wayside Dashboard (tkinter), wired via SharedState like ``launcher.py``
+
+Run:
+
+    py -3 launch_system.py
+
+Windows are tiled so the CTC is not covered by the track or train model UIs.
+The Default Green ``T-01``…``T-10`` simulation is hidden on the CTC diagram and
+wayside so only the three physical trains (``Train-1``…``Train-3``) match the
+train controller / train models. All three start at the **Green yard** (block 57).
+Use **manual dispatch** from the yard; only **one train at a time** receives
+movement (train 2 after train 1 has left the yard, then train 3). Use the
+**Train** and **Destination** columns for progress. Physics uses the CTC speed
+slider scale (default 10 = 0.1 s/tick).
+"""
+
+from __future__ import annotations
+
+import atexit
+import copy
+import importlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import threading
+
+from PyQt6.QtCore import QTimer
+from PyQt6.QtGui import QColor, QGuiApplication, QPalette
+from PyQt6.QtWidgets import QApplication
+
+from ctc_ui import GREEN_LINE_BLOCKS, MainWindow
+from shared_state import SharedState
+from train_backend import TrainSystem, kmhToMph, samplePeriodSec
+from train_frontend_main import TrainControlUI
+
+import track_model
+
+NUM_TRAINS = 10   # matches _GREEN_NUM_TRAINS in ctc_ui.py
+# Green Line yard (matches ``GREEN_STATION_TO_START["Yard"]`` in ``ctc_ui``).
+GREEN_YARD_BLOCK_NUM = 57
+
+def _green_section_for_block(bn: int) -> str:
+    for sec, blks in GREEN_LINE_BLOCKS.items():
+        if any(b[0] == bn for b in blks):
+            return sec
+    return "A"
+
+def _motion_allowed(ctc_win: MainWindow) -> bool:
+    """True when the user has started manual dispatch or the default Green sim."""
+    ext = getattr(ctc_win, "_external_trains", {}) or {}
+    if any(str(k).startswith("Manual-") for k in ext): return True
+    if any(str(k).startswith("Train-") for k in ext): return True
+    if getattr(ctc_win, "_sim_running", False):
+        if getattr(ctc_win, "_sim_schedule", None) == "Default Green":
+            return True
+    return False
+
+def _tile_windows(ctc_win: MainWindow, track_window, model_uis: list) -> None:
+    """Avoid stacking every window at (0,0), which hides the CTC and train UIs."""
+    screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        ctc_win.raise_()
+        ctc_win.activateWindow()
+        return
+    avail = screen.availableGeometry()
+    ctc_win.resize(min(1400, avail.width() - 80), min(900, avail.height() - 80))
+    ctc_win.move(avail.left() + 24, avail.top() + 24)
+    ctc_win.show()
+    fg = ctc_win.frameGeometry()
+    tw = track_window.frameGeometry().width() or 720
+    tx = min(fg.right() + 12, avail.right() - tw - 16)
+    track_window.move(max(avail.left(), tx), fg.top())
+    track_window.show()
+    base_y = min(fg.bottom() + 12, avail.bottom() - 260)
+    for i, ui in enumerate(model_uis):
+        ui.move(fg.left() + 40 + i * 36, base_y + i * 32)
+        ui.show()
+    ctc_win.raise_()
+    ctc_win.activateWindow()
+
+
+def _place_model_ui(ctc_win: MainWindow, ui, idx: int) -> None:
+    """Place a newly spawned Train Model UI near the CTC."""
+    try:
+        fg = ctc_win.frameGeometry()
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            ui.move(fg.left() + 40 + idx * 36, fg.bottom() + 12 + idx * 32)
+        else:
+            avail = screen.availableGeometry()
+            base_y = min(fg.bottom() + 12, avail.bottom() - 260)
+            ui.move(fg.left() + 40 + idx * 36, base_y + idx * 32)
+    except Exception:
+        pass
+    ui.show()
+
+
+def _run_wayside(state: SharedState) -> None:
+    from wayside_dashboard import WaysideDashboard
+
+    app = WaysideDashboard(shared_state=state)
+    # Auto-open the live controller immediately so switch/signal
+    # computation starts without the user needing to click anything.
+    app.after(500, app._open_live)
+    app.mainloop()
+
+
+def _lookup_block_data(green_ctc: dict, bn: int):
+    return green_ctc.get(bn) or green_ctc.get(str(bn))
+
+
+def _lookup_signal(signals: dict, bn: int):
+    return signals.get(bn) if signals.get(bn) is not None else signals.get(str(bn))
+
+
+def _signal_lookahead(tr, signals: dict, lookahead: int = 5):
+    """
+    Return the most restrictive signal in the next `lookahead` blocks of the
+    train's planned route. None if no signal found, otherwise "red"/"yellow"/"green".
+    Red wins over yellow wins over green.
+
+    Each section's entry is now protected by its own signal (e.g. block 76 for
+    forward N entry, block 100 for reverse N entry), so direction-aware lookups
+    are no longer needed — each train's route only encounters the entry signals
+    relevant to its own direction.
+    """
+    if not hasattr(tr, "_route") or not tr._route:
+        return None
+    idx = getattr(tr, "_route_idx", 0)
+    worst = None
+    for offset in range(1, lookahead + 1):
+        next_idx = idx + offset
+        if next_idx >= len(tr._route):
+            break
+        bn = tr._route[next_idx]
+        if bn <= 0:
+            break
+        sig = _lookup_signal(signals, bn)
+        if sig is None:
+            continue
+        s = str(sig).lower()
+        if s == "red":
+            return "red"   # red is most restrictive — stop searching
+        if s == "yellow" and worst != "red":
+            worst = "yellow"
+        elif s == "green" and worst is None:
+            worst = "green"
+    return worst
+
+
+def _next_block_occupied(tr, track_map, lookahead: int = 1) -> bool:
+    """
+    Return True if any of the next `lookahead` blocks in the train's route
+    is occupied by a different train. Used as a fallback safety check when
+    no signal exists to enforce headway.
+    """
+    if not hasattr(tr, "_route") or not tr._route:
+        return False
+    idx = getattr(tr, "_route_idx", 0)
+    for offset in range(1, lookahead + 1):
+        next_idx = idx + offset
+        if next_idx >= len(tr._route):
+            break
+        bn = tr._route[next_idx]
+        if bn <= 0:
+            break
+        b = track_map.block(bn)
+        if b is None:
+            continue
+        if getattr(b, "is_occupied", False):
+            return True
+    return False
+
+
+def _apply_signal(cmd_kmh: float, auth_km: float, sig) -> tuple[float, float]:
+    if sig is None:
+        return cmd_kmh, auth_km
+    s = str(sig).lower()
+    if s == "red":
+        return 0.0, 0.0
+    if s == "yellow":
+        return max(0.0, cmd_kmh * 0.5), auth_km
+    return cmd_kmh, auth_km
+
+
+
+def _apply_wayside_switches(track_map, sw_positions: dict | None) -> None:
+    """
+    Read current switch positions from a wayside output snapshot and
+    set block.switch_state on every switch block in the track model.
+    """
+    from wayside_controller import GREEN_SWITCHES
+
+    def _parse_int(x):
+        try: return int(x)
+        except Exception: return None
+
+    sw_positions = sw_positions or {}
+    if not isinstance(sw_positions, dict) or not sw_positions:
+        return
+
+    for sw_id, pos in sw_positions.items():
+        sw_def = GREEN_SWITCHES.get(sw_id)
+        if not sw_def:
+            continue
+        host_bn = _parse_int(sw_def.get("host", -1))
+        if not host_bn or host_bn <= 0:
+            continue
+        host_b = track_map.block(host_bn)
+        if host_b is None or not hasattr(host_b, "switch_state"):
+            continue
+
+        is_reverse = str(pos).lower() == "reverse"
+        desired_next = sw_def["reverse"][0] if is_reverse else sw_def["normal"][0]
+        desired_i = _parse_int(desired_next)
+        if desired_i is None:
+            continue
+
+        try:
+            opt1 = host_b.first_switch_option()
+            opt2 = host_b.second_switch_option()
+            opt1_i = [_parse_int(v) for v in opt1]
+            opt2_i = [_parse_int(v) for v in opt2]
+            if desired_i in opt1_i:
+                new_state = 0
+            elif desired_i in opt2_i:
+                new_state = 1
+            else:
+                continue
+            host_b.switch_state = new_state
+        except Exception:
+            pass
+
+    # ── Block 13 is a 3-way junction (NOT a wayside switch host) ─────────────
+    # It connects SW1 and SW12 into a single physical "Y" junction.
+    # Block 13's switch options are (12,13) and (1,13). When the train is on
+    # the A-loop return path (1->13), block 13 must select option (1,13)
+    # i.e. switch_state=1. Otherwise it selects option (12,13), state=0.
+    sw1_pos  = str(sw_positions.get("SW1",  "normal")).lower()
+    sw12_pos = str(sw_positions.get("SW12", "normal")).lower()
+    blk13 = track_map.block(13)
+    if blk13 is not None and hasattr(blk13, "switch_state"):
+        try:
+            opt1 = blk13.first_switch_option()    # (12, 13)
+            opt2 = blk13.second_switch_option()   # (1, 13)
+            opt1_i = [_parse_int(v) for v in opt1]
+            opt2_i = [_parse_int(v) for v in opt2]
+            # If SW1 is reverse, train is going 1->13: select the (1,13) option
+            if sw1_pos == "reverse" or sw12_pos == "reverse":
+                if 1 in opt2_i:
+                    blk13.switch_state = 1
+                elif 1 in opt1_i:
+                    blk13.switch_state = 0
+            else:
+                # Default: train going 12->13, select the (12,13) option
+                if 12 in opt1_i:
+                    blk13.switch_state = 0
+                elif 12 in opt2_i:
+                    blk13.switch_state = 1
+        except Exception:
+            pass
+
+    # ── Block 63 is a 3-way junction at yard (NOT a wayside switch host) ─────
+    # It connects SW57 (yard return) and SW62 (yard exit) plus the K-section.
+    # Block 63's options are (0,63) and (62,63). When the train is dispatched
+    # from yard (0 -> 63), block 63 must select option (0,63), state=0.
+    # When operating normally on the line (62 -> 63 forward), state must
+    # match whichever option contains 62.
+    sw57_pos = str(sw_positions.get("SW57", "normal")).lower()
+    sw62_pos = str(sw_positions.get("SW62", "normal")).lower()
+    blk63 = track_map.block(63)
+    if blk63 is not None and hasattr(blk63, "switch_state"):
+        try:
+            opt1 = blk63.first_switch_option()    # (0, 63)
+            opt2 = blk63.second_switch_option()   # (62, 63)
+            opt1_i = [_parse_int(v) for v in opt1]
+            opt2_i = [_parse_int(v) for v in opt2]
+            # If yard is currently in the active path (SW57 or SW62 reverse),
+            # block 63 should connect via the (0,63) option.
+            if sw57_pos == "reverse" or sw62_pos == "reverse":
+                if 0 in opt1_i:
+                    blk63.switch_state = 0
+                elif 0 in opt2_i:
+                    blk63.switch_state = 1
+            else:
+                # Normal forward operation: 62 -> 63
+                if 62 in opt2_i:
+                    blk63.switch_state = 1
+                elif 62 in opt1_i:
+                    blk63.switch_state = 0
+        except Exception:
+            pass
+
+
+def _apply_wayside_signals(track_map, state: SharedState) -> None:
+    """
+    Read computed signal colors from wayside outputs in SharedState and
+    set block.light_state on every signal block in the track model.
+    Mirrors the wayside's signals dict: {block_num: "green"|"yellow"|"red"}.
+    """
+    ws_out = state.get_wayside_outputs("Green")
+    if not ws_out:
+        return
+    sigs = ws_out.get("signals") or {}
+    for blk_num, color in sigs.items():
+        if color not in ("green", "yellow", "red"):
+            continue
+        try:
+            bn = int(blk_num)
+        except (TypeError, ValueError):
+            continue
+        b = track_map.block(bn)
+        if b is not None and hasattr(b, "light_state"):
+            b.light_state = color
+
+
+def main() -> None:
+    state = SharedState()
+    threading.Thread(
+        target=_run_wayside,
+        args=(state,),
+        daemon=True,
+        name="WaysideThread",
+    ).start()
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("Integrated Train System")
+    app.setStyle("Fusion")
+    light = QPalette()
+    light.setColor(QPalette.ColorRole.Window,          QColor(255, 255, 255))
+    light.setColor(QPalette.ColorRole.WindowText,      QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.Base,            QColor(240, 240, 240))
+    light.setColor(QPalette.ColorRole.AlternateBase,   QColor(225, 225, 225))
+    light.setColor(QPalette.ColorRole.Text,            QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.ButtonText,      QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.BrightText,      QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.Button,          QColor(225, 225, 225))
+    light.setColor(QPalette.ColorRole.Highlight,       QColor(74, 111, 165))
+    light.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+    app.setPalette(light)
+
+    ctc_win = MainWindow(shared_state=state)
+    # Keep automatic schedule trains visible in CTC when users click Load.
+    ctc_win._integrated_hide_schedule_trains = False
+    ctc_win._integrated_sim_clock_from_launcher = True
+    # One simulation tick in ``on_tick`` so inject → poll order is guaranteed.
+    if hasattr(ctc_win, "_train_timer"):
+        ctc_win._train_timer.stop()
+
+    track_window = track_model.make_widget()
+    track_map = track_window.tkm
+    track_window._launcher_managed = True
+
+    def _on_track_model_loaded(new_track_map) -> None:
+        nonlocal track_map, yard_block
+        track_map = new_track_map
+        yard_block = track_map.block(GREEN_YARD_BLOCK_NUM)
+
+    track_window.track_model_loaded_callback = _on_track_model_loaded
+
+    def _open_track_model_csv(_line: str) -> None:
+        try: track_window.ui.open_file_browser()
+        except Exception: pass
+
+    ctc_win.track_tab_changed_callback = _open_track_model_csv
+
+    #do not create trains at launch. Spawn only when CTC creates a Manual-* dispatch.
+    track_map.trains = []
+
+    yard_block = track_map.block(GREEN_YARD_BLOCK_NUM)
+
+    train_models: dict[int, TrainSystem] = {}
+    model_uis: dict[int, TrainControlUI] = {}
+    dispatched: list[str] = []
+    # manually_dispatched_ids: dict[str, int] = {}
+
+    _tile_windows(ctc_win, track_window, [])
+
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.bind(("127.0.0.1", 0))
+    # Multiple Train Controller windows connect in integrated mode.
+    server.listen(16)
+    server.setblocking(False)
+    port = server.getsockname()[1]
+
+    env = os.environ.copy()
+    env["TRAIN_IPC_HOST"] = "127.0.0.1"
+    env["TRAIN_IPC_PORT"] = str(port)
+
+    controller_script = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "TrainController.py"
+    )
+    controller_procs: list[subprocess.Popen] = []
+
+    def _spawn_controller_window(train_id: int) -> None:
+        if not os.path.exists(controller_script):
+            return
+        tenv = env.copy()
+        tenv["TRAIN_ID"] = str(int(train_id))
+        # In integrated mode, open each dispatched Train Controller maximized.
+        tenv["TRAIN_FULLSCREEN"] = "1"
+        # One controller window per train (one-process-per-window).
+        controller_procs.append(
+            subprocess.Popen([sys.executable, controller_script], env=tenv)
+        )
+
+    def _cleanup() -> None:
+        for p in list(controller_procs):
+            try:
+                p.terminate()
+            except Exception:
+                pass
+
+    atexit.register(_cleanup)
+
+    conns: list[socket.socket] = []
+    recv_bufs: dict[socket.socket, str] = {}
+    last_authority_block: dict[int, tuple] = {}
+    # Keep train motion smooth across block boundaries even when CTC snapshot doesn't contain the next block yet.
+    _last_cmd_kmh: dict[int, float] = {}
+    _last_auth_km: dict[int, float] = {}
+    # Station dwell + destination hold
+    STATION_DWELL_SEC = 10.0
+    _last_block_seen: dict[int, int] = {}
+    _dwell_remaining_sec: dict[int, float] = {}
+    _dwell_active: set[int] = set()
+    _dwell_prev_service_brake: dict[int, bool] = {}
+    _dest_hold_on: set[int] = set()
+    # Track which trains have left yard (to detect return vs initial dispatch)
+    _despawn_flags: dict[str, bool] = {}
+
+    def on_tick() -> None:
+        nonlocal conns, recv_bufs
+
+        try:
+            slider = float(ctc_win.speed_slider.value())
+        except Exception:
+            slider = 10.0
+        slider = max(1.0, min(100.0, slider))
+        # Match CTC schedule scaling: schedule adds ``slider`` sim-seconds per tick;
+        # physics uses the same factor relative to nominal slider=10 → dt=0.1 s.
+        physics_dt = samplePeriodSec * (slider / 10.0)
+
+        if getattr(ctc_win, "_sim_running", False):
+            try:
+                # Timer fires every 100 ms. At slider=10 → 1× real time:
+                # add 0.1 sim-sec per tick (same rate as ctc_ui._poll_active_trains).
+                ctc_win._sim_time_sec += slider * 0.01
+            except Exception:
+                pass
+
+        #spawn train_models on CTC manual dispatch (max NUM_TRAINS)
+        ext = copy.deepcopy(ctc_win._external_trains)
+        for new_dispatch in [k for k in list(ext.keys()) if k.startswith("Manual-")]:
+            if new_dispatch in dispatched or len(dispatched) >= NUM_TRAINS:
+                continue
+            print(f"DISPATCHING MANUAL TRAIN: {new_dispatch}")
+            info = ext.pop(new_dispatch)
+            b_id     = int(info.get("block", yard_block.num))
+            # Block 0 = logical yard but doesn't exist in the CSV.
+            # Spawn at block 57 (physical yard entry in track model) instead.
+            # Spawn at block 63 (first real block after SW62 yard exit).
+            # Block 0 has no CSV entry; block 63 is where the train physically starts.
+            spawn_bn = 63 if b_id == 0 else b_id
+            new_t_id = len(dispatched) + 1
+            system = TrainSystem()
+            train_models[new_t_id] = system
+            ui = TrainControlUI(trainModel=system.model)
+            ui.setWindowTitle(f"Train Model - Train {new_t_id}")
+            model_uis[new_t_id] = ui
+            _place_model_ui(ctc_win, ui, new_t_id - 1)
+            t = track_model.Train(new_t_id, track_map)
+            t.block = track_map.block(spawn_bn)
+            # Set route: full Green Line path starting from spawn block.
+            # The train follows this block-by-block, bypassing switch logic.
+            try:
+                from ctc_ui import _GREEN_OUTBOUND_PATH
+                if spawn_bn in _GREEN_OUTBOUND_PATH:
+                    start_idx = _GREEN_OUTBOUND_PATH.index(spawn_bn)
+                    t.set_route(list(_GREEN_OUTBOUND_PATH[start_idx:]))
+            except Exception:
+                pass
+            track_map.trains.append(t)
+            dispatched.append(new_dispatch)
+            _spawn_controller_window(new_t_id)
+            ext[f"Train-{new_t_id}"] = {
+                **(ext.get(f"Train-{new_t_id}", {}) or {}),
+                "line":       info.get("line", "Green Line"),
+                "section":    info.get("section", _green_section_for_block(b_id)),
+                "block":      b_id,
+                "origin":     info.get("origin"),
+                "dest":       info.get("dest"),
+                "dest_block": info.get("dest_block"),
+                "arrival":    info.get("arrival"),
+            }
+        ctc_win._external_trains = ext
+
+
+        # ── Push track model occupancy to SharedState ─────────────────────────
+        # Real-system architecture: track model is the source of occupancy.
+        # Wayside reads this and merges it with CTC speed/authority.
+        try:
+            green_occ = {
+                int(b.num): bool(getattr(b, "is_occupied", False))
+                for b in getattr(track_map, "blocks", [])
+                if b is not None
+            }
+            state.push_track_occupancy("Green", green_occ)
+        except Exception:
+            pass
+
+        # Update physical Train-* positions in the CTC table.
+        for i, tr in enumerate(track_map.trains):
+            tid = f"Train-{i + 1}"
+            bn = tr.block.num
+            sec = _green_section_for_block(bn)
+            prev = ctc_win._external_trains.get(tid, {})
+            ctc_win._external_trains[tid] = {
+                **prev,
+                "line": "Green Line",
+                "section": sec,
+                "block": bn,
+            }
+
+        # ── Spawn train objects for Auto-* entries (auto schedule trains) ─────
+        ext = copy.deepcopy(ctc_win._external_trains)
+        for new_dispatch in [k for k in list(ext.keys())
+                              if k.startswith("Auto-") and k not in dispatched]:
+            if len(dispatched) >= NUM_TRAINS:
+                continue
+
+            print(f"DISPATCHING AUTO TRAIN: {new_dispatch}")
+            info: dict = ext.get(new_dispatch, {})
+            b_id = int(info.get("block", yard_block.num))
+            # Spawn at block 63 — first real block after SW62 yard exit.
+            spawn_bn = 63 if b_id == 0 else b_id
+
+            new_t_id = len(dispatched) + 1
+            system   = TrainSystem()
+            train_models[new_t_id] = system
+            ui = TrainControlUI(trainModel=system.model)
+            ui.setWindowTitle(f"Train Model - {new_dispatch}")
+            model_uis[new_t_id] = ui
+            _place_model_ui(ctc_win, ui, new_t_id - 1)
+
+            t = track_model.Train(new_t_id, track_map)
+            t.block = track_map.block(spawn_bn)
+            # Set route: full Green Line path starting from spawn block.
+            # The train follows this block-by-block, bypassing switch logic.
+            try:
+                from ctc_ui import _GREEN_OUTBOUND_PATH
+                if spawn_bn in _GREEN_OUTBOUND_PATH:
+                    start_idx = _GREEN_OUTBOUND_PATH.index(spawn_bn)
+                    t.set_route(list(_GREEN_OUTBOUND_PATH[start_idx:]))
+            except Exception:
+                pass
+            track_map.trains.append(t)
+
+            dispatched.append(new_dispatch)
+            _spawn_controller_window(new_t_id)
+            ctc_win._external_trains[new_dispatch] = {
+                **info,
+                "line":    "Green Line",
+                "section": _green_section_for_block(spawn_bn),
+                "block":   spawn_bn,
+            }
+            # Rename to Train-N so the rest of the tick loop picks it up
+            ctc_win._external_trains[f"Train-{new_t_id}"] = ctc_win._external_trains.pop(new_dispatch)
+
+        # Poll CTC active trains — updates schedule table and pushes
+        # speed/authority to SharedState for the wayside to consume.
+        ctc_win._poll_active_trains()
+
+        green_ctc = state.get_ctc_block_data("Green")
+        green_ws  = state.get_wayside_outputs("Green")
+        # speed/authority comes from CTC data; signals/switches from wayside
+        ws_signals   = (green_ws or {}).get("signals",  {}) if isinstance(green_ws, dict) else {}
+        ws_switches  = (green_ws or {}).get("switches", {}) if isinstance(green_ws, dict) else {}
+        ws_blocks    = green_ctc   # cmd_speed + authority keyed by block num
+
+        # Keep Track Model per-block cmd/auth fields up-to-date for the block-info textbox.
+        # Prefer track-controller channel; fall back to CTC snapshot.
+        try:
+            src = ws_blocks if ws_blocks else green_ctc
+            for b in getattr(track_map, "blocks", []) or []:
+                try:
+                    bn = int(getattr(b, "num", 0))
+                except Exception:
+                    continue
+                bd = _lookup_block_data(src, bn)
+                if not bd:
+                    continue
+                try:
+                    b.speed = float(bd.get("cmd_speed", getattr(b, "speed", 0.0) or 0.0))
+                except Exception:
+                    pass
+                try:
+                    b.authority = float(bd.get("authority", getattr(b, "authority", 0.0) or 0.0))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        signals = ws_signals
+        # Apply wayside switch positions to track model before physics runs.
+        # The wayside is the sole authority on switch states.
+        _apply_wayside_switches(track_map, ws_switches)
+        _apply_wayside_signals(track_map, state)
+        allow_motion = _motion_allowed(ctc_win)
+
+        # ── Detect trains removed by track_model (route exhausted at yard) ────
+        # When a train completes its route, track_model removes it from
+        # track_map.trains directly. We clean up the associated CTC entry,
+        # train_model, and UI here.
+        for tid in list(train_models.keys()):
+            still_alive = any(getattr(tr, "num", None) == tid
+                              for tr in track_map.trains)
+            if not still_alive:
+                train_models.pop(tid, None)
+                ui_to_close = model_uis.pop(tid, None)
+                if ui_to_close is not None:
+                    try:
+                        ui_to_close.close()
+                    except Exception:
+                        pass
+                _last_cmd_kmh.pop(tid, None)
+                _last_auth_km.pop(tid, None)
+                last_authority_block.pop(tid, None)
+                _despawn_flags.pop(f"_visited_nonzero_{tid}", None)
+                tid_key = f"Train-{tid}"
+                ctc_win._external_trains.pop(tid_key, None)
+                print(f"Cleaned up Train-{tid} (route completed)")
+
+        for ti, tr in enumerate(track_map.trains, start=1):
+            bn = tr.block.num
+            # When train is in the yard (block 0), use block 63's data —
+            # CTC pushes authority onto block 63 (first block after SW62 yard exit)
+            # so the train gets authority to move out of the yard.
+            lookup_bn = 63 if bn == 0 else bn
+            # Prefer the track-controller (wayside) channel for cmd/auth.
+            bd  = _lookup_block_data(ws_blocks, lookup_bn) or _lookup_block_data(green_ctc, lookup_bn)
+            sig = _lookup_signal(signals, lookup_bn)
+
+            # ── Despawn train when it returns to yard after completing route ──
+            # Only despawn if the train has already left the yard (visited at
+            # least one non-zero block) to avoid despawning on initial dispatch.
+            _visited_key = f"_visited_nonzero_{ti}"
+            if bn != 0:
+                _despawn_flags[_visited_key] = True
+            elif _despawn_flags.get(_visited_key):
+                # Train is back at block 0 after completing its route — despawn.
+                try:
+                    track_map.trains.remove(tr)
+                except ValueError:
+                    pass
+                train_models.pop(ti, None)
+                ui_to_close = model_uis.pop(ti, None)
+                if ui_to_close is not None:
+                    try:
+                        ui_to_close.close()
+                    except Exception:
+                        pass
+                _last_cmd_kmh.pop(ti, None)
+                _last_auth_km.pop(ti, None)
+                last_authority_block.pop(ti, None)
+                _despawn_flags.pop(_visited_key, None)
+                # Remove from CTC external trains
+                tid_key = f"Train-{ti}"
+                ctc_win._external_trains.pop(tid_key, None)
+                print(f"Despawned Train-{ti} (returned to yard)")
+                break   # restart loop since trains list changed
+            # ── End despawn ──────────────────────────────────────────────────
+
+
+            if allow_motion and bd:
+                cmd = float(bd.get("cmd_speed", 0.0))
+                auth = float(bd.get("authority", 0.0))
+                # CTC often omits or zeros cmd for a block until the next refresh; keep
+                # motion smooth when we still have authority (real stops use auth=0 or signals).
+                if cmd <= 0.0 and auth > 0.0:
+                    cmd = float(_last_cmd_kmh.get(ti, 0.0))
+                if auth <= 0.0 and cmd > 0.0:
+                    la = float(_last_auth_km.get(ti, 0.0))
+                    if la > 0.0:
+                        auth = la
+                # Honor wayside/CTC commanded speed directly. Do not clamp to
+                # static track speed limit here; CTC may intentionally command
+                # a route-level arrival-target speed.
+            elif allow_motion:
+                # Carry forward last commanded speed/authority instead of dropping to 0
+                # at each new block.
+                cmd = float(_last_cmd_kmh.get(ti, 0.0))
+                auth = float(_last_auth_km.get(ti, 0.0))
+            else:
+                cmd = 0.0
+                auth = 0.0
+            # Apply wayside signals with deeper route lookahead so trains
+            # always receive a commanded speed of 0 while heading into red.
+            # They resume automatically when the looked-ahead signal clears.
+            sig_ahead = _signal_lookahead(tr, signals, lookahead=25)
+            cmd, auth = _apply_signal(cmd, auth, sig_ahead)
+            # Real-time occupancy check: if the next route block is occupied
+            # by another train, stop. This is the primary mechanism preventing
+            # collisions and replaces signal-based headway.
+            if _next_block_occupied(tr, track_map, lookahead=1):
+                cmd, auth = 0.0, 0.0
+            tr.integrated_cmd_kmh = cmd
+            tr.integrated_auth_km = auth
+            # Only update the carry-forward cache on non-zero values.
+            # A red signal returns (0, 0); writing that would poison the cache
+            # and prevent recovery once the signal clears on the next tick.
+            if float(cmd) > 0.0:
+                _last_cmd_kmh[ti] = float(cmd)
+            if float(auth) > 0.0:
+                _last_auth_km[ti] = float(auth)
+
+        for train_id, system in train_models.items():
+            idx = train_id - 1
+            # Don't overwrite the authority we zeroed for dest-held trains.
+            if (idx + 1) in _dest_hold_on:
+                continue
+            m = system.model
+            td = track_map.get_train_track_data(idx)
+            if td:
+                cur_block = td.get("block_num", -1)
+                block_authority = td["authority_km"]
+                m.commandedSpeedKmh = td["commanded_speed_kmh"]
+                prev = last_authority_block.get(train_id)
+                if (
+                    prev is None
+                    or prev[0] != cur_block
+                    or prev[1] != block_authority
+                ):
+                    # Wayside authority often changes discretely per block; a downward jump
+                    # makes the controller think authority vanished and zeros traction for a tick.
+                    # On block change: never shrink commanded authority below what the model
+                    # already holds (unless the track explicitly commands 0).
+                    try:
+                        inc_m = float(block_authority)
+                    except Exception:
+                        inc_m = 0.0
+                    if prev is not None and prev[0] != cur_block:
+                        try:
+                            cur_m = float(m.commandedAuthorityKm)
+                        except Exception:
+                            cur_m = 0.0
+                        if inc_m <= 0.0:
+                            m.commandedAuthorityKm = inc_m
+                        else:
+                            m.commandedAuthorityKm = max(cur_m, inc_m)
+                    else:
+                        m.commandedAuthorityKm = block_authority
+                    last_authority_block[train_id] = (cur_block, block_authority)
+                m.trackGradePercent = td["track_grade_percent"]
+                m.speedLimitKmh = td["speed_limit_kmh"]
+                m.beaconData = td["beacon_data"]
+                m.isRailBroken = td["rail_broken"]
+                m.isTrackCircuitFailed = td["circuit_failed"]
+                m.isTrackPowerLost = td["power_lost"]
+                m.boardingPassengerCount = td["boarding_passengers"]
+
+        # Accept any newly started controller connections.
+        while True:
+            try:
+                new_conn, _ = server.accept()
+                new_conn.setblocking(False)
+                conns.append(new_conn)
+                recv_bufs[new_conn] = ""
+            except BlockingIOError:
+                break
+            except Exception:
+                break
+
+        # Consume controller inputs from each connected controller window.
+        for s in list(conns):
+            try:
+                while True:
+                    try:
+                        data = s.recv(4096)
+                        if not data:
+                            try:
+                                s.close()
+                            except Exception:
+                                pass
+                            conns.remove(s)
+                            recv_bufs.pop(s, None)
+                            break
+                        recv_bufs[s] = (recv_bufs.get(s, "") + data.decode("utf-8", errors="ignore"))
+                    except BlockingIOError:
+                        break
+
+                buf = recv_bufs.get(s, "")
+                while "\n" in buf:
+                    line, buf = buf.split("\n", 1)
+                    if not line.strip():
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except Exception:
+                        continue
+                    if msg.get("type") != "controller":
+                        continue
+                    tid = int(msg.get("train_id", 1))
+                    sys_obj = train_models.get(tid)
+                    if sys_obj is None:
+                        continue
+                    c = sys_obj.controller
+                    for k, cast in [
+                        ("commanded_speed", float),
+                        ("speed_limit", float),
+                        ("authority", float),
+                        ("kp", float),
+                        ("ki", float),
+                        ("manual_speed_target", float),
+                    ]:
+                        if k in msg:
+                            try:
+                                setattr(c, k, cast(msg[k]))
+                            except Exception:
+                                pass
+                    for k in [
+                        "emergency_brake",
+                        "service_brake",
+                        "headlights",
+                        "fault_power",
+                        "fault_brake",
+                        "fault_signal",
+                        "automatic_mode",
+                    ]:
+                        if k in msg:
+                            try:
+                                setattr(c, k, bool(msg[k]))
+                            except Exception:
+                                pass
+                    if "interior_lights" in msg:
+                        try:
+                            c.interior_lights = int(msg["interior_lights"])
+                        except Exception:
+                            pass
+                    if "doors_state" in msg:
+                        try:
+                            ds = int(msg["doors_state"])
+                            # Safety: doors must not open while moving. Use backend guard if available.
+                            if hasattr(c, "set_doors") and callable(getattr(c, "set_doors")):
+                                c.set_doors(ds)
+                            else:
+                                c.doors_state = ds
+                        except Exception:
+                            pass
+                    if "cabin_temp" in msg:
+                        try:
+                            c.cabin_temp = float(msg["cabin_temp"])
+                        except Exception:
+                            pass
+                    if "passengers" in msg:
+                        try:
+                            c.passengers = int(msg["passengers"])
+                        except Exception:
+                            pass
+                    if "next_station" in msg:
+                        try:
+                            c.next_station = str(msg["next_station"])
+                        except Exception:
+                            pass
+                recv_bufs[s] = buf
+            except Exception:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                try:
+                    conns.remove(s)
+                except Exception:
+                    pass
+                recv_bufs.pop(s, None)
+
+        for system in train_models.values():
+            system.tick(dt=physics_dt)
+
+        for train_id, system in train_models.items():
+            track_map.set_train_speed(train_id - 1, system.model.currentSpeedKmh)
+
+        track_map.update(physics_dt)
+
+        # Apply station dwell + destination hold AFTER the Track Model advances blocks,
+        # so we don't miss stations/destination when multiple blocks are traversed in one tick.
+        for ti, tr in enumerate(track_map.trains, start=1):
+            try:
+                cur_bn = int(tr.block.num)
+            except Exception:
+                continue
+
+            # Destination hold: stop the train when it reaches its destination.
+            # Clear the hold if the destination has been changed to a different block
+            # (operator re-dispatched the train), so it can move again.
+            try:
+                dest_bn = ctc_win._external_trains.get(f"Train-{ti}", {}).get("dest_block")
+                if dest_bn is not None and int(dest_bn) == cur_bn:
+                    _dest_hold_on.add(ti)
+                elif ti in _dest_hold_on:
+                    # Destination changed — release the hold and the service brake.
+                    _dest_hold_on.discard(ti)
+                    sys_obj = train_models.get(ti)
+                    if sys_obj is not None:
+                        sys_obj.controller.service_brake = False
+            except Exception:
+                pass
+
+            if ti in _dest_hold_on:
+                try:
+                    tr.speed = 0.0
+                except Exception:
+                    pass
+                try:
+                    sys_obj = train_models.get(ti)
+                    if sys_obj is not None:
+                        sys_obj.controller.service_brake = True
+                        # Zero authority so the display correctly shows the train
+                        # has no further clearance at its destination.
+                        sys_obj.model.commandedAuthorityKm = 0.0
+                        sys_obj.controller.authority = 0.0
+                except Exception:
+                    pass
+                continue
+
+            # Station dwell (1s) on entry
+            prev_bn = int(_last_block_seen.get(ti, -1))
+            if cur_bn != prev_bn:
+                _last_block_seen[ti] = cur_bn
+                try:
+                    if hasattr(tr.block, "is_station") and tr.block.is_station():
+                        _dwell_remaining_sec[ti] = float(STATION_DWELL_SEC)
+                except Exception:
+                    pass
+
+            rem = float(_dwell_remaining_sec.get(ti, 0.0))
+            if rem > 0.0:
+                _dwell_remaining_sec[ti] = max(0.0, rem - float(physics_dt))
+                # During station dwell, force the commanded motion channel to "stop"
+                # so the controller brakes naturally and the train doesn't roll through.
+                try:
+                    tr.speed = 0.0
+                except Exception:
+                    pass
+                try:
+                    sys_obj = train_models.get(ti)
+                    if sys_obj is not None:
+                        if ti not in _dwell_active:
+                            _dwell_active.add(ti)
+                            _dwell_prev_service_brake[ti] = bool(getattr(sys_obj.controller, "service_brake", False))
+                        sys_obj.controller.service_brake = True
+                        # Override Track Model outputs during dwell: commanded speed + authority = 0.
+                        # `get_train_track_data()` prefers these per-train overrides when set.
+                        try:
+                            tr.integrated_cmd_kmh = 0.0
+                            tr.integrated_auth_km = 0.0
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            else:
+                # Release dwell only if we applied it.
+                try:
+                    sys_obj = train_models.get(ti)
+                    if sys_obj is not None and ti in _dwell_active:
+                        sys_obj.controller.service_brake = bool(_dwell_prev_service_brake.pop(ti, False))
+                        _dwell_active.discard(ti)
+                        try:
+                            tr.integrated_cmd_kmh = None
+                            tr.integrated_auth_km = None
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        try:
+            track_model.ui.update()
+            if track_window.testui.myscroll.isVisible():
+                track_window.testui.update()
+        except Exception:
+            pass
+
+        if conns:
+            try:
+                payloads: list[bytes] = []
+                for train_id, system in train_models.items():
+                    m = system.model
+                    feedback = {
+                        "type": "model",
+                        "train_id": int(train_id),
+                        "current_speed": float(system.controller.current_speed),
+                        "commanded_speed": float(kmhToMph(m.commandedSpeedKmh)),
+                        "speed_limit": float(kmhToMph(m.speedLimitKmh)),
+                        "power_output": float(system.controller.power_output),
+                        "authority": float(system.controller.authority),
+                        "passengers": int(getattr(m, "onboardPassengers", 0) or 0),
+                        "distance_travelled_km": float(
+                            getattr(system.controller, "distance_travelled_km", 0.0)
+                        ),
+                        "emergency_brake": bool(system.controller.emergency_brake),
+                        "service_brake": bool(system.controller.service_brake),
+                        "fault_power": bool(system.controller.fault_power),
+                        "fault_brake": bool(system.controller.fault_brake),
+                        "fault_signal": bool(system.controller.fault_signal),
+                        "next_station": str(system.controller.next_station),
+                    }
+                    payloads.append((json.dumps(feedback) + "\n").encode("utf-8"))
+                for s in list(conns):
+                    try:
+                        for data in payloads:
+                            s.sendall(data)
+                    except Exception:
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
+                        try:
+                            conns.remove(s)
+                        except Exception:
+                            pass
+                        recv_bufs.pop(s, None)
+            except Exception:
+                pass
+
+    sim_timer = QTimer()
+    sim_timer.timeout.connect(on_tick)
+    sim_timer.start(100)
+
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()
