@@ -13,15 +13,10 @@ NONEPEN = QPen(Qt.PenStyle.NoPen) #QPen(QColor("black"),0)
 
 # Track Model dark theme (local styling only)
 TM_BG = QColor("#0b1020")          # window background
-TM_PANEL = QColor("#111827")       # block tile background
-TM_GRID = QColor("#1f2937")        # subtle borders
-TM_TEXT = QColor("#e5e7eb")
 
-def div(x, y):
-    return int(x/y)
+def div(x, y): return int(x/y)
 
-def to_int(b: bool) -> int:
-    return 1 if b else 0
+def to_int(b: bool) -> int: return 1 if b else 0
 
 def first_int_in(s: str) -> int:
     import re
@@ -34,6 +29,10 @@ def remall(x, l: list) -> list:
     return c
 
 def sign(b: bool)->int: return 1 if b else -1
+
+def when_lt (l:list, cond): return [x for x in l if x <  cond]
+def when_not(l:list, cond): return [x for x in l if x != cond]
+def when    (l:list, cond): return [x for x in l if x == cond]
 
 def pixmap(name: str, color: str) -> QPixmap:
     p = QPixmap(f"{os.path.dirname(__file__)}\\{name}.png").scaled(32, 32)
@@ -50,13 +49,9 @@ def pixmap(name: str, color: str) -> QPixmap:
 
 class Block:
     def __init__(self, num, type:str, dir, leng, grade, spdlim):
-        self.num = int(num)
+        self.num = n = int(num)
         self.type = type
-        # Normalize directionality values from CSV so routing logic is consistent.
-        _d = str(dir).strip().lower()
-        if _d in ("bid", "bidir", "bidirectional"):
-            _d = "b"
-        self.directionality = _d
+        self.directionality = str(dir)
         self.grade = float(grade)
         self.is_occupied = False
         self.mylength = float(leng)
@@ -69,61 +64,45 @@ class Block:
         self.dsrptrck = False
         self.nopower = False
 
-        self.isdownward = False
         self.next = []
         self.prev = []
-        
-        t = self.type
 
         #if 3 connections, if missing a neighbor, that is the unknown connection (i think 3way is always missing a neighbor)
         #if 2 connections, the unknown connection is the neighbor on that side (prev <, next >)
         if self.is_switch():
+            #  a[0]
+            #   \ 
+            #    [n]---x
+            #   /
+            #  a[2]
+            # one known is a neighbor. x = the other neighbor
+
             self.switch_state = 0
-            import re
-            a = [int(i) for i in re.findall(r'\d+',t)] #array of all digit sequences in t
+            f = self.first_switch_option()
             n = self.num
 
-            if len(a) == 2:
-                if a[0] == n:
-                    self.next = [a[1]]
-                    self.prev = [n-1]
-                else:
-                    self.prev = [a[0]]
-                    self.next = [n+1]
-            if len(a) == 4:
-                #  a[0]
-                #   \ 
-                #    [n]---x
-                #   /
-                #  a[2]
-                # one known is a neighbor. x = the other neighbor
-                other_neighbor = n+1 if n-1 in a else n-1
+            if self.is_main_switch():
+                s = self.second_switch_option()
+                other_neighbor = n+1 if n-1 in f+s else n-1
 
-                if a[1] == n and a[3] == n:
-                    self.prev = remall(n,a)
-                    self.next = [other_neighbor]
-                elif a[0] == n and a[3] == n:
-                    self.next.append(a[1])
-                    self.prev.append(a[2])
-                    if abs(a[1] - n) == 1: 
-                        self.prev.append(other_neighbor)
-                    else:
-                        self.next.append(other_neighbor)
-                elif a[1] == n and a[2] == n:
-                    self.next.append(a[3])
-                    self.prev.append(a[0])
-                    if abs(a[3] - n) == 1: 
-                        self.prev.append(other_neighbor)
-                    else:
-                        self.next.append(other_neighbor)
-                elif a[0] == n and a[2] == n:
-                    self.next = remall(n,a)
-                    self.prev = [other_neighbor]
+                if f[0] == n: self.next.append(f[1])
+                else:         self.prev.append(f[0])
+                if s[0] == n: 
+                    if len(self.next) == 0: self.next.append("x")
+                    self.next.append(s[1])
+                else:
+                    if len(self.prev) == 0: self.prev.append("x")         
+                    self.prev.append(s[0])
+
+                if f[1] == n and s[1] == n: self.next = [other_neighbor]
+                elif f[0] == n and s[0] == n: self.prev = [other_neighbor]
+                else:
+                    def __fill(l:list,it):
+                        for i,x in enumerate(l): 
+                            if x == "x": l[i] = it
+                    if other_neighbor > n: __fill(self.next, other_neighbor)
+                    else: __fill(self.prev, other_neighbor)
                 
-                # if self.num in [15,10]: self.next = []
-                # if self.num == 1: self.prev = []
-                
-                #
                 #[5,6,5,11]
                 #   |
                 #  \ /
@@ -136,188 +115,107 @@ class Block:
                 #[self,othr,othr,self]
                 #[othr,self,self,othr]
                 #[othr,self,othr,self]
+            else:
+                if f[0] == n:
+                    self.next = [f[1]]
+                    self.prev = [n-1]
+                else:
+                    self.prev = [f[0]]
+                    self.next = [n+1]
+
+                    
+            ne = self.token("e")
+            if len(ne) > 0:
+                self.next = [int(x.strip("e")) for x in ne.split(",")]
+            pr = self.token("p")
+            if len(pr) > 0:
+                self.prev = [int(x.strip("p")) for x in pr.split(",")]
+
         else:
             if self.directionality in "+b":
-                self.prev.append(self.num-1)
-                self.next.append(self.num+1)
+                self.prev.append(n-1)
+                self.next.append(n+1)
             else:
-                self.prev.append(self.num+1)
-                self.next.append(self.num-1)
-
-        #     if self.num != 1: self.prev.append(self.num-1)
-        #     if self.num not in [10, 15]: self.next.append(self.num+1)
+                self.prev.append(n+1)
+                self.next.append(n-1)
         
-        # Always initialize light_state so attribute access never fails,
-        # even if has_light() returns False for this block.
-        self.light_state = "green"
-            
+        if self.has_light(): self.light_state = "green"
         if self.is_crossing(): self.crossing_state = False
-
         if self.is_station(): 
             self.tickets = 0
             self.num_boarding = 0
             self.num_standing = 0
             self.gentickets()
     
-    def tokens           (self) -> list[str]: return self.type.split(";")
-    def is_switch        (self) -> bool: return len([x for x in self.tokens() if x[0] == "w"]) > 0
-    def is_station       (self) -> bool: return len([x for x in self.tokens() if x[0] == "t"]) > 0
-    def is_beacon        (self) -> bool: return len([x for x in self.tokens() if x[0] == "b"]) > 0
+    def tokens(self) -> list[str]: return self.type.split(";")
+    def token(self, c:str) -> str: return ([x for x in self.tokens() if x[0] == c]+[""])[0]
+    
+    def is_switch        (self) -> bool: return len(self.token("w")) > 0
+    def is_station       (self) -> bool: return len(self.token("t")) > 0
+    def is_beacon        (self) -> bool: return len(self.token("b")) > 0
     def is_main_switch   (self) -> bool: return self.is_switch() and "l" not in self.tokens()
     def is_branch_switch (self) -> bool: return self.is_switch() and "l" in self.tokens()
-    def has_light        (self) -> bool:
-        # Single source of truth: the wayside's signal block set.
-        # Falls back to local heuristic if the import fails.
-        try:
-            from wayside_controller import GREEN_SIGNAL_BLOCKS, RED_SIGNAL_BLOCKS
-            return self.num in GREEN_SIGNAL_BLOCKS or self.num in RED_SIGNAL_BLOCKS
-        except Exception:
-            return self.is_beacon() or self.is_branch_switch()
+    def has_light        (self) -> bool: return self.is_beacon() or self.is_branch_switch()
     def is_crossing      (self) -> bool: return "c" in self.tokens()
     def is_tunnel        (self) -> bool: return "u" in self.tokens()
 
-    def station_name(self) -> str: return [x for x in self.tokens() if x[0] == "t"][0].split(",")[1]
+    def station_name(self) -> str: return self.token("t").split(",")[1]
+    def beacon_data (self) -> str: return self.token("b")[2:]
 
-    def first_switch_option(self) -> tuple[int,int]: #from,to
-        tok = [x for x in self.tokens() if x[0] == "w"][0][1:]
-        if "," in tok: return tok.split(",")[0].split("-")
-        else: return tok.split("-")
-    def second_switch_option(self) -> tuple[int,int]: #from,to
-        tok = [x for x in self.tokens() if x[0] == "w"][0][1:]
-        return tok.split(",")[1].split("-")
+    #from,to
+    def first_switch_option (self) -> tuple[int,int]: return [int(x) for x in self.token("w")[1:].split(",")[0].split("-")]
+    def second_switch_option(self) -> tuple[int,int]: return [int(x) for x in self.token("w")[1:].split(",")[1].split("-")]
+    def cur_switch_option   (self) -> tuple[int,int]: return [self.first_switch_option(),self.second_switch_option()][self.switch_state]    
 
-    def cur_switch_option(self):
-        return [self.first_switch_option(),self.second_switch_option()][self.switch_state]
-    
-    def top_next(self):
-        n = []+self.next
-        ops = self.first_switch_option()+self.second_switch_option()
-        ops = [int(x) for x in ops if x != str(self.num)]
-        
-        if set(ops) != set(n):
-            for x in ops:
-                if x in n:
-                    n.remove(x)
-                    return n[0]
-        else:
-            return ops[0]
-    
-    def bot_next(self):
-        for x in self.next:
-            if x != self.top_next(): return x
+    def first_block (self) -> int: return when_not(self.first_switch_option(), self.num)[0]
+    def second_block(self) -> int: return when_not(self.second_switch_option(),self.num)[0]
+    def cur_block   (self) -> int: return when_not(self.cur_switch_option(),   self.num)[0]
 
-    def top_prev(self):
-        p = []+self.prev
-        ops = self.first_switch_option()+self.second_switch_option()
-        ops = [int(x) for x in ops if x != str(self.num)]
+    def _chosen_index(self)->int: return (self.next if self.cur_switch_option()[0] == self.num else self.prev).index(self.cur_block())
+    def chosen_next(self) -> int: return self.next[self._chosen_index() if len(self.next) > 1 else 0]
+    def chosen_prev(self) -> int: return self.prev[self._chosen_index() if len(self.prev) > 1 else 0]
 
-        if set(ops) != set(p):
-            for x in ops:
-                if x in p:
-                    p.remove(x)
-                    return p[0]
-        else:
-            return ops[0]
-    
-    def bot_prev(self):
-        for x in self.prev:
-            if x != self.top_prev(): return x
-
-    def chosen_next(self):
-        if len(self.next) > 1:
-            check = [int(x) for x in self.cur_switch_option() if x != str(self.num)][0]
-            if check in self.next:
-                return check
-            else:
-                unwanted = [int(x) for x in self.first_switch_option()+self.second_switch_option() if x != str(self.num) and x != str(check)][0]
-                return [x for x in self.next if x != unwanted][0]
-        else:
-            return self.next[0]
-    def chosen_prev(self):
-        if len(self.prev) > 1:
-            check = [int(x) for x in self.cur_switch_option() if x != str(self.num)][0]
-            if check in self.prev: return check
-            else:
-                unwanted = [int(x) for x in self.first_switch_option()+self.second_switch_option() if x != str(self.num) and x != str(check)][0]
-                return [x for x in self.prev if x != unwanted][0]
-        else:
-            return self.prev[0]
-    
     def gentickets(self):
         import random
         self.num_boarding = random.randint(0,100)
         self.tickets = random.randint(self.num_boarding,100)
         self.num_standing += self.tickets
-        # print(f"there were {self.tickets} more sales!")
-        # print(f"{self.num_standing} are standing")
     
-    def beacondata(self)->str:
-        # return self.type[2:] if self.is_beacon() else None
-        return [x for x in self.tokens() if x[0] == "b"][0][2:] if self.is_beacon() else None
-    
-    # def setcard(self, c): self.card = c
     def setx(self, x): self.x = x
     def sety(self, y): self.y = y
-    def occupy(self):
-        self.is_occupied = True
-    def deoccupy(self):
-        self.is_occupied = False
+    def occupy  (self): self.is_occupied = True
+    def deoccupy(self): self.is_occupied = False
 
 class Train:
     def __init__(self, num:int, tkm):
         self.dir = "+"
         self.num = num
         self.pos_on_b = 0
+        self.from_b = 0
         self.block:Block = tkm.blocks[0]
         self.speed = 0
         self.num_riding = 0
         self.beacon = ''
-        self._prev_block_num = None   # source block (for bidir/3-way routing)
-        self._route: list[int] = []   # planned block sequence (block numbers)
-        self._route_idx = 0           # current position in route
         # Integrated launcher may override command/authority per-train even if
         # multiple trains share a block (do not rely solely on block fields).
         self.integrated_cmd_kmh: float | None = None
         self.integrated_auth_km: float | None = None
 
-    def set_route(self, blocks: list[int]) -> None:
-        """
-        Assign a planned block sequence for this train.
-        Movement will follow this path block-by-block, ignoring switch state.
-        """
-        self._route = list(blocks)
-        # Find current block in route, or start at 0
-        try:
-            self._route_idx = self._route.index(self.block.num)
-        except ValueError:
-            self._route_idx = 0
-
-    def next_route_block(self) -> int | None:
-        """Return the next block number in the route, or None if exhausted."""
-        nxt_idx = self._route_idx + 1
-        if 0 <= nxt_idx < len(self._route):
-            return self._route[nxt_idx]
-        return None
-
     def update(self):
         if self.block.nopower: print("NO POWER TO TRAIN!")
         if self.block.is_station(): self.board()
         if self.block.is_beacon():
-            print(f"block {self.block.num} beacondata:'{self.block.beacondata()}'")
-            self.beacon = self.block.beacondata()
+            print(f"block {self.block.num} beacondata:'{self.block.beacon_data()}'")
+            self.beacon = self.block.beacon_data()
     
     def board(self):
         import random
         r = random.randint(0, self.num_riding)
         self.num_riding -= r
         self.block.num_standing += r
-        # print(f"{r} got off of the train")
-        # print(f"{self.block.num_standing} are standing")
 
         self.block.num_standing -= self.block.num_boarding
         self.num_riding += self.block.num_boarding
-        # print(f"{self.block.num_boarding} got on the train")
-        # print(f"{self.block.num_standing} are standing")
 
         self.block.gentickets()
 
@@ -328,8 +226,6 @@ class Train:
             pass
 
 #TODO test ui should receive the actual output type of the tkc not strings/ints.
-#make TrackMap.build() work for the Green and Red lines
-#CORRECT THE UNITS
 
 class TrackRectItem(QGraphicsRectItem):
     def __init__(self, scene: QGraphicsScene, b: Block):
@@ -357,7 +253,7 @@ class TrackRectItem(QGraphicsRectItem):
         txt = str(b.num)
         if b.is_crossing(): self.ic2 = scene.addPixmap(pixmap('/assets/railroad-crossing','white'))
         if b.has_light  (): self.ic2 = scene.addPixmap(pixmap('/assets/traffic-light','white'))
-        if b.is_switch  (): self.downArrow = []   # always init for switches
+        elif b.is_switch(): self.downArrow = []
         if b.is_station (): self.ic2 = scene.addPixmap(pixmap('/assets/building','white'))
         if b.is_beacon  (): self.ic3 = scene.addPixmap(pixmap('/assets/beacon','white'))
         
@@ -369,11 +265,77 @@ class TrackRectItem(QGraphicsRectItem):
         text.setFont(QFont("Segoe UI", 12))
         if b.is_main_switch(): text.setPos((b.x+0.5 )*BOXSIZE-div(text.boundingRect().width(),2),  b.y     *BOXSIZE)
         else:                  text.setPos((b.x+0.25)*BOXSIZE-div(text.boundingRect().width(),2), (b.y+0.5)*BOXSIZE)
-        text.setPen(QPen(TM_TEXT, 1))
+        text.setPen(WHITPEN)
         self.setZValue(0)
 
-        # if b.card: 
-        self.drawTrack(scene)
+        def addHead(s,e,downward = False):
+            (sx,sy),(ex,ey) = s,e
+            import math
+            size = 5
+            ang = math.atan2(ey - sy, ex - sx)
+            xdif, ydif = size*math.cos(ang), size*math.sin(ang)
+            left  = QPointF(ex-xdif + 0.6*ydif, ey-ydif - 0.6*xdif)
+            right = QPointF(ex-xdif - 0.6*ydif, ey-ydif + 0.6*xdif)
+            tip   = QPointF(ex, ey)
+            head = QGraphicsPolygonItem(QPolygonF([tip, left, right]))
+
+            head.setZValue(2)
+            head.setBrush(QBrush(QColor("#60a5fa")))
+            head.setPen(WHITPEN)
+
+            if downward: self.downArrow.append(head)
+            else: self.upArrow.append(head)
+            scene.addItem(head)
+
+        def addArrow(stup, etup, downward = False):
+            x, y = self.myx*BOXSIZE, self.myy*BOXSIZE
+            sx,ex,sy,ey = [d + int(BOXSIZE*i) for d,i in zip([x,x,y,y],[stup[0],etup[0],stup[1],etup[1]])]
+            
+            line = QGraphicsLineItem(sx,sy,ex,ey)
+            line.setZValue(1)
+            line.setPen(WHITPEN)
+
+            if downward: self.downArrow.append(line)
+            else: self.upArrow.append(line)
+            scene.addItem(line)
+            
+            addHead((sx,sy),(ex,ey), downward)
+            if self.block.directionality == "b": addHead((ex,ey),(sx,sy), downward)
+
+        if self.block.is_main_switch():
+            b = self.block
+
+            self.text.setX(self.text.x()-10)
+            self.text.setY(self.text.y()+20)
+
+            pn=b.prev+b.next
+            shared = [x for i, x in enumerate(pn) if x in pn[:i]][0] if len(pn)==4 else None
+            if len(b.next) == 1 or shared == b.num+1:
+                addArrow((1,0),(0,0.5))
+                addArrow((1,1),(0,0.5),True)
+            if len(b.prev) == 1 or shared == b.num-1:
+                addArrow((1,0.5),(0,0))
+                addArrow((1,0.5),(0,1),True)                
+
+            def __check(x): return "Y" if x == "0" else x
+            u,d = __check(str(b.first_block())),__check(str(b.second_block()))
+
+            def make(it:QGraphicsSimpleTextItem,y):
+                it.setFont(QFont("Segoe UI", 12))
+                it.setPos((b.x+0.5)*BOXSIZE-div(it.boundingRect().width(),2),b.y*BOXSIZE+y)
+                it.setPen(WHITPEN)
+
+            make(QGraphicsSimpleTextItem(u, self), -10)
+            make(QGraphicsSimpleTextItem(d, self), +50)
+        else:
+            sx,ex,sy,ey = [0.5]*4
+            sx,ex = 1,0
+            if self.block.directionality in "+bs":
+                addArrow((sx,sy),(ex,ey))
+            # elif self.block.directionality == "s":
+            #     print("HELLO")#TODO
+            else:
+                addArrow((ex,ey),(sx,sy))
     
     def mousePressEvent(self, event):
         b = self.block
@@ -431,112 +393,12 @@ class TrackRectItem(QGraphicsRectItem):
         if self.block.is_crossing():
             self.crossing_icon('black' if p == BLCKPEN else 'white')
             self.text.setPen(p)
-        
-    def drawTrack(self, scene: QGraphicsScene):
-        def addHead(s,e,downward = False):
-            (sx,sy),(ex,ey) = s,e
-            import math
-            size = 5
-            ang = math.atan2(ey - sy, ex - sx)
-            xdif, ydif = size*math.cos(ang), size*math.sin(ang)
-            left  = QPointF(ex-xdif + 0.6*ydif, ey-ydif - 0.6*xdif)
-            right = QPointF(ex-xdif - 0.6*ydif, ey-ydif + 0.6*xdif)
-            tip   = QPointF(ex, ey)
-            head = QGraphicsPolygonItem(QPolygonF([tip, left, right]))
-
-            # Ensure arrows render above the filled block tiles (dark theme).
-            head.setZValue(2)
-            head.setBrush(QBrush(QColor("#60a5fa")))
-            head.setPen(WHITPEN)
-
-            if downward: self.downArrow.append(head)
-            else: self.upArrow.append(head)
-            scene.addItem(head)
-            
-        sx,ex,sy,ey = [0.5]*4
-        
-        # if self.block.card == "left" : 
-        sx,ex = 1,0
-        # if self.block.card == "right": sx,ex = 0,1
-        # if self.block.card == "up"   : sy,ey = 1,0
-        # if self.block.card == "down" : sy,ey = 0,1
-
-        def addArrow(stup, etup, downward = False):
-            x, y = self.myx*BOXSIZE, self.myy*BOXSIZE
-            sx,ex,sy,ey = [d + int(BOXSIZE*i) for d,i in zip([x,x,y,y],[stup[0],etup[0],stup[1],etup[1]])]
-            
-            line = QGraphicsLineItem(sx,sy,ex,ey)
-            line.setZValue(1)
-            line.setPen(WHITPEN)
-
-            if downward: self.downArrow.append(line)
-            else: self.upArrow.append(line)
-            scene.addItem(line)
-            
-            addHead((sx,sy),(ex,ey), downward)
-            if self.block.directionality == "b":
-                addHead((ex,ey),(sx,sy), downward)
-
-        #TODO factor in directionality
-
-        # if self.block.is_switch():
-        if self.block.is_main_switch():
-            #next 
-            # \ __ from
-            # /
-            #next
-            #    or
-            #      from
-            #next __ / 
-            #        \
-            #      from
-            self.text.setX(self.text.x()-10)
-            self.text.setY(self.text.y()+20)
-
-            b = self.block
-            
-            if len(self.block.next) > 1:
-                addArrow((sx,sy),(ex, 0))
-                addArrow((sx,sy),(ex, 1),True)
-                u,d = self.block.top_next(),self.block.bot_next()
-                plus = -0.25
-            else:
-                addArrow((0,0.5),(1,0))
-                addArrow((0,0.5),(1,1),True)
-                u,d = self.block.top_prev(),self.block.bot_prev()
-                plus = 0.25
-
-            self.upbranchtext = ut = QGraphicsSimpleTextItem(str(u) if u > 0 else "Y", self)
-            ut.setFont(QFont("Segoe UI", 12))
-            ut.setPos((b.x+0.5+plus)*BOXSIZE-div(ut.boundingRect().width(),2),b.y*BOXSIZE-10)
-            ut.setPen(WHITPEN)
-            
-            self.dnbranchtext = dt = QGraphicsSimpleTextItem(str(d) if d > 0 else "Y", self)
-            dt.setFont(QFont("Segoe UI", 12))
-            dt.setPos((b.x+0.5+plus)*BOXSIZE-div(dt.boundingRect().width(),2),b.y*BOXSIZE+50)
-            dt.setPen(WHITPEN)
-        # else:
-        #     if self.block.isdownward:
-        #         self.text.setY(self.text.y()-10)
-        #         self.text.setX(self.text.x()-7)
-        #         addArrow((sx,0),(ex, ey))
-        #     else:
-        #         addArrow((sx,1),(ex, ey))
-        else:
-            
-            if self.block.directionality in "+bs":
-                addArrow((sx,sy),(ex,ey))
-            else:
-                addArrow((ex,ey),(sx,sy))
 
 class TrackMap:
     def __init__(self, filename):
         self.height, self.width = 10, 20
         import csv
         csv_table = []
-        # Allow callers to pass a relative path regardless of current working directory.
-        if not os.path.isabs(filename):
-            filename = os.path.normpath(os.path.join(os.path.dirname(__file__), filename))
         with open(filename, newline="") as f:
             for row in csv.reader(f):
                 csv_table.append(tuple(row[:6]))
@@ -544,76 +406,31 @@ class TrackMap:
         self.trains:list[Train] = []
 
     def build(self):
-        used_xy: set[tuple[int, int]] = set()
-        b1 = self.block(1)
-        base_y = int(getattr(b1, "y", int(self.height * 0.5))) if b1 is not None else int(self.height * 0.5)
         for b in self.blocks:
             if b.num == 0: 
-                b.setx(10)
-                b.sety(10)
+                b.setx(0)
+                b.sety(0)
             elif b.num == 1:
                 b.setx(int(self.width*0.75))
                 b.sety(int(self.height*0.5))
-            elif b.num == 2:
-                b.setx(int(self.width*0.75))
-                b.sety(int(self.height*0.5)+2)
             else:
                 if b.directionality in "+bs": b0 = self.block(min(b.prev))
                 else:                         b0 = self.block(min(b.next))
-                if b0.num == 0:               b0 = self.block([x for x in b.prev if x != 0][0])
-                # Some CSV orderings / directionality choices can reference a neighbor
-                # that hasn't been assigned coordinates yet. Fall back to a safe default
-                # so build never crashes; positions will still be deterministic.
-                if b0 is not None and not hasattr(b0, "y"):
-                    try:
-                        b0.setx(int(self.width * 0.75))
-                        b0.sety(int(self.height * 0.5))
-                    except Exception:
-                        pass
-                
-                # print(f"from:{b0.num}")
-                # print(f"to{b.num}")
-                
-                if b0.is_main_switch() and len(b0.next) > 1:
-                    if b.num == b0.top_next():
-                        b.sety(b0.y-1)
-                    else:
-                        b.sety(b0.y+1)
-                        b.isdownward = True
+                    
+                if b0.num == 0:               b0 = self.block(when_not(b.prev,0)[0])
+                    
+                if b0.is_main_switch():
+                    if   b0.first_block()  == b.num: b.sety(b0.y-1)
+                    elif b0.second_block() == b.num: b.sety(b0.y+1)
+                    else:                      b.sety(b0.y)
                 else: 
+                    if b0.num > b.num: b0 = self.blocks[when_lt(b.next+b.prev,b.num)[0]-1] #blocks are read-in in increasing order, if b0 >, need to choose other b0
                     b.sety(b0.y)
                 
-                #
-                #18 17 16 15 <14>< 
-                #                13 <1 <2 <3 <4 <5 <6 <7> <8> <9> <10> <11> <12>
-                #             12>   
-                # 
-                b.setx(b0.x-1) #TODO follow direction of prev
-
-                # if b.directionality in "+bs":
-                #     b.setcard(b0.card)
-                # else:
-                #     b.setcard("right")
-
-            # Ensure 2–12 sit on the intended row (after initial placement).
-            if 2 <= int(b.num) <= 12:
-                b.sety(base_y + 3)
-
-            # Prevent blocks from landing on top of each other.
-            if b.x and b.y:
-                try:
-                    x = int(b.x)
-                    y = int(b.y)
-                except Exception:
-                    x, y = int(b.x), int(b.y)
-                while (x, y) in used_xy:
-                    y += 1
-                b.setx(x)
-                b.sety(y)
-                used_xy.add((x, y))
-
-            # for n in b.next: print(str(b.num)+"->"+str(n))
-            # print(str(b.num) +":"+str(b.x) + "," + str(b.y) + "|" + b.card)
+                if (b.directionality in "s+" and b0.directionality == "-") or (b.directionality == "-" and b0.directionality in "s+"):
+                    b.sety(b.y+2)
+                
+                b.setx(b0.x-1)
     
     def block(self, n):
         for b in self.blocks:
@@ -654,149 +471,70 @@ class TrackMap:
                 old = t.pos_on_b
                 t.pos_on_b += t.speed * (10/36) * tickrate
                 
-                while t.pos_on_b > t.block.mylength or t.pos_on_b < 0:
+                while t.pos_on_b > t.block.mylength:
                     b = t.block
-
-                    # PRIORITY 1: If train has a planned route, follow it.
-                    # This bypasses all switch/bidir routing — the route already
-                    # accounts for direction and destination.
-                    route_target = t.next_route_block() if hasattr(t, "next_route_block") else None
-
-                    if route_target == 0:
-                        # Route says next stop is yard — despawn the train.
-                        self.trains.remove(t)
-                        b.deoccupy()
-                        print(f"train {t.num} despawned at yard")
-                        break
-                    elif route_target is not None and 1 <= route_target <= len(self.blocks):
-                        to_b = self.blocks[route_target-1]
-                        # Advance route index
-                        t._route_idx += 1
-                    elif b.is_switch():
-                        # Always use chosen_next() — the wayside sets switch_state
-                        # to the correct position before the train arrives.
-                        c = b.chosen_next()
+                    if b.is_switch():
+                        if b.directionality == "s": 
+                            frm, to = b.first_switch_option() #must be branch if "s"
+                            if frm == b.num: c = to
+                            else:            c = b.num+1 #default for "s" seems to be fine to be "+"
+                        else:
+                            c = when_not([b.chosen_prev(),b.chosen_next()],t.from_b)[-to_int(t.dir == "+")]
+                            t.dir = "+" if c == b.chosen_next() else "-"
                         if c == 0:
                             self.trains.remove(t)
                             b.deoccupy()
                             break
                         else:
                             to_b = self.blocks[c-1]
+                            if c == b.chosen_prev(): t.dir = "+"
 
-                    elif b.directionality in "+b":
-                        if b.directionality == "+":
-                            # Unidirectional: next is always the higher block
-                            if b.next[0] > b.num: to_b = self.blocks[b.next[0]-1]
-                            else:                  to_b = self.blocks[b.prev[0]-1]
-                        else:
-                            # Bidirectional. Continue away from source block.
-                            prev_bn = getattr(t, "_prev_block_num", None)
-
-                            if b.is_main_switch():
-                                # Main switch host bidir block.
-                                # Route based on switch state and source:
-                                #   chosen_next() gives the wayside-controlled exit
-                                #   If chosen_next() equals source, fall back to chosen_prev()
-                                # For block 85 with state=1 (reverse) coming from 100:
-                                #   chosen_next() would crash → handle via chosen_prev when
-                                #   state would route us back to source.
-                                target = None
-                                try:
-                                    target = b.chosen_next()
-                                    if target == prev_bn:
-                                        # would route us back where we came from
-                                        target = b.chosen_prev()
-                                        if target == prev_bn:
-                                            target = None
-                                except Exception:
-                                    target = None
-
-                                # Fallback: try other approach
-                                if target is None or target == prev_bn:
-                                    # Try the OTHER switch state's chosen_prev (block 85 case:
-                                    # state=1 reverse but routing target = state=0's prev = 84)
-                                    try:
-                                        saved_state = b.switch_state
-                                        b.switch_state = 1 - saved_state
-                                        alt_target = None
-                                        try:
-                                            alt_target = b.chosen_next()
-                                        except Exception:
-                                            pass
-                                        if alt_target is None or alt_target == prev_bn:
-                                            try:
-                                                alt_target = b.chosen_prev()
-                                            except Exception:
-                                                pass
-                                        b.switch_state = saved_state
-                                        if alt_target is not None and alt_target != prev_bn:
-                                            target = alt_target
-                                    except Exception:
-                                        pass
-
-                                if target is None:
-                                    # Last resort: any non-source neighbor
-                                    for cand in list(b.next) + list(b.prev):
-                                        if cand != prev_bn:
-                                            target = cand
-                                            break
-                                if target is None:
-                                    target = b.next[0] if b.next else b.prev[0]
-                                to_b = self.blocks[target-1]
-                            else:
-                                # Plain bidir: continue away from source
-                                if prev_bn is not None and prev_bn in b.prev:
-                                    to_b = self.blocks[b.next[0]-1]
-                                elif prev_bn is not None and prev_bn in b.next:
-                                    to_b = self.blocks[b.prev[0]-1]
-                                else:
-                                    if t.dir == "+":
-                                        to_b = self.blocks[b.next[0]-1]
-                                    else:
-                                        to_b = self.blocks[b.prev[0]-1]
+                    elif b.directionality == "+":
+                        t.dir = "+"
+                        if b.next[0] > b.num:to_b = self.blocks[b.next[0]-1]
+                        else:                to_b = self.blocks[b.prev[0]-1]
 
                     elif b.directionality == "-":
-                        if b.prev[0] < b.num: to_b = self.blocks[b.prev[0]-1]
-                        else:                  to_b = self.blocks[b.next[0]-1]
-                        
-                    # Update t.dir based on which side of to_b we entered from
-                    if int(b.num) in getattr(to_b, "next", []):
                         t.dir = "-"
-                    elif int(b.num) in getattr(to_b, "prev", []):
-                        t.dir = "+"
+                        if b.prev[0] < b.num:to_b = self.blocks[b.prev[0]-1]
+                        else:                to_b = self.blocks[b.next[0]-1]
+                        
+                    elif b.directionality == "b":
+                        if t.dir == "+": to_b = self.blocks[b.next[0]-1]
+                        else:            to_b = self.blocks[b.prev[0]-1]
 
-                    #going forward is defined as getting closer to next
-                    on_route_now = (hasattr(t, "_route") and t._route and
-                                    t._route_idx > 0 and t._route_idx <= len(t._route))
-                    if on_route_now:
-                        # Route always treats movement as forward continuation —
-                        # pos_on_b just resets per block regardless of geometric direction.
-                        going_forward = True
-                    elif b.directionality in "+b" or b.is_switch(): going_forward = to_b.num in b.next
-                    elif b.directionality == "-":                going_forward = to_b.num in b.prev
-                    
+                    if to_b.num == b.num-1: t.dir = "-"
+
+                    t.from_b = b.num
+
+                    print(f"traveling from block {b.num}")
+                    print(f"to block {to_b.num}")
+                    print(f"dir:{t.dir}")
+
+                    # Hard interlock: never allow entry into a red-signaled block.
+                    # This prevents transitions like 99->100 when block 100 is red.
+                    if to_b.has_light() and str(getattr(to_b, "light_state", "green")).lower() == "red":
+                        t.pos_on_b = b.mylength
+                        t.speed = 0.0
+                        print(f"train {t.num} STOP (red signal at block {to_b.num})")
+                        break
+
                     if to_b.is_occupied:
                         t.pos_on_b = old
                         print(f"train {t.num} CRASH (occupied block)")
                         break
                     if to_b.is_main_switch():
-                        # Skip crash check when train is on a planned route —
-                        # the route is authoritative.
-                        on_route = (hasattr(t, "_route") and t._route and
-                                    t._route_idx < len(t._route))
-                        if not on_route:
-                            if not (b.num == to_b.chosen_next() or b.num == to_b.chosen_prev()): #switch is not aligned with this block
-                                t.pos_on_b = old
-                                print(f"train {t.num} CRASH (switch)")
-                                break
+                        if not (b.num == to_b.chosen_next() or b.num == to_b.chosen_prev()): #switch is not aligned with this block
+                            t.pos_on_b = old
+                            print(f"train {t.num} CRASH (switch)")
+                            break
                     if to_b.is_crossing() and to_b.crossing_state:
                         t.pos_on_b = old
                         print(f"train {t.num} CRASH (crossing)")
                         break
                     
                     t.block.deoccupy()
-                    t.pos_on_b += t.block.mylength * sign(not going_forward)
-                    t._prev_block_num = t.block.num   # remember source for routing
+                    t.pos_on_b -= t.block.mylength
                     t.block = to_b
                     t.update()
                     
@@ -844,9 +582,44 @@ class MainWindow(QWidget):
         self.setWindowTitle("Train Track Model")
         self.setMinimumSize(400,400)
         self.tkm = tkm
+        self.track_view_widget = None
+        self.track_model_loaded_callback = None
         import tkm_testui as tui
         self.testui = tui.TestUI(self)
         self.ui: UIControls = None
+
+    def load_track_model(self, csv_path: str, add_default_trains: bool = True):
+        """Load a new track model from the given CSV file."""
+        try:
+            new_tkm = TrackMap(csv_path)
+            new_tkm.trains.clear()
+            if add_default_trains:
+                new_tkm.trains.append(Train(1, new_tkm))
+                new_tkm.trains.append(Train(2, new_tkm))
+            
+            # Remove old view widget from layout
+            layout = self.layout()
+            if layout is None:
+                layout = QVBoxLayout(self)
+            if self.track_view_widget:
+                layout.removeWidget(self.track_view_widget)
+                self.track_view_widget.deleteLater()
+            
+            self.tkm = new_tkm
+
+            # Add new view widget
+            self.track_view_widget = self.tkm.view()
+            layout.insertWidget(0, self.track_view_widget)
+
+            if callable(self.track_model_loaded_callback):
+                self.track_model_loaded_callback(self.tkm)
+            
+            # Reset UI selection
+            if self.ui:
+                self.ui.selectedRect = None
+                self.ui.update()
+        except Exception as e:
+            print(f"Error loading track model: {e}")
 
     def closeEvent(self, a0):
         self.testui.hide()
@@ -887,34 +660,55 @@ class UIControls:
                 self.selectedRect.block.dsrptrck = circ.isChecked()
                 self.selectedRect.block.nopower = pwr.isChecked()
 
-        lay = QVBoxLayout(controls)
-
+        lay = QVBoxLayout()
         for c in [brk,circ,pwr]:
             c.setTristate(False)
             c.setChecked(False)
             c.stateChanged.connect(occ)
             lay.addWidget(c)
 
+        # File browser button for loading CSV files
+        csv_btn = QPushButton("Load CSV", controls)
+        csv_btn.clicked.connect(self.open_file_browser)
+        
+        # Test UI button
         tui_btn = QPushButton("Test UI", controls); 
         tui_btn.clicked.connect(m.testui.show)
 
+        # Vertical layout for buttons
+        button_layout = QVBoxLayout()
+        button_layout.addWidget(csv_btn)
+        button_layout.addWidget(tui_btn)
+
         hl.addWidget(binfo)
         hl.addLayout(lay)
-        hl.addWidget(tui_btn)
+        hl.addLayout(button_layout)
+
+    def open_file_browser(self):
+        """Open a file browser to select a CSV file and load it."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self.m,
+            "Select CSV Track File",
+            "assets",
+            "CSV Files (*.csv)"
+        )
+        if file_path:
+            # In standalone mode (when testui exists), add default trains
+            add_trains = (
+                not getattr(self.m, "_launcher_managed", False)
+                and hasattr(self.m, 'testui')
+                and self.m.testui is not None
+            )
+            self.m.load_track_model(file_path, add_default_trains=add_trains)
 
     def display_block(self, b:Block):
-        # Always define a default to avoid UnboundLocalError for unexpected values.
-        dir = str(getattr(b, "directionality", "") or "Unknown")
         if b.directionality == "b": dir = "Bidirectional"
         if b.directionality == "+": dir = "Increasing Block Number"
         if b.directionality == "-": dir = "Decreasing Block Number"
         if b.directionality == "s": 
-            if b.is_main_switch():
-                ops = b.cur_switch_option()
-                dir = f"{ops[0]}→{ops[1]}"
-            else:
-                ops = b.first_switch_option()
-                dir = f"{ops[0]}→{ops[1]}"
+            c = b.cur_switch_option()
+            dir = f"{c[0]}→{c[1]}"
+
         type = "Track"
         if b.is_station() and b.is_main_switch():
             c = b.cur_switch_option()
@@ -927,9 +721,10 @@ class UIControls:
             if b.is_station(): type = f"{b.station_name()} Station, Ticket Sales: {str(b.tickets)}, {str(b.num_boarding)} boarding, {str(b.num_standing)} standing"
         if b.is_crossing(): type = "Track Crossing"
         
-        auth_mi = round(float(b.authority) * 0.621371192, 1) if b.authority else 0
-        spd_mph = round(float(b.speed) * 0.621371192, 1) if b.speed else 0
         lim_mph = round(float(b.speed_limit) * 0.621371192, 1) if b.speed_limit else 0
+        auth_mi = round(float(b.authority)   * 0.621371192, 1) if b.authority   else 0
+        spd_mph = round(float(b.speed)       * 0.621371192, 1) if b.speed       else 0
+        
         self.binfo.setText(
             f"Directionality: {dir}"
             f"\nCommanded Authority: {auth_mi} mi"
@@ -941,14 +736,15 @@ class UIControls:
         )
     
     def update(self):
-        if self.selectedRect: 
-            self.display_block(self.selectedRect.block)
+        r = self.selectedRect
+        if r: 
+            self.display_block(r.block)
             for it in self.m.tkm.items:
                 it.is_selected = False
                 if not it.isUnderMouse(): it.setPen(NONEPEN)
-            self.selectedRect.setPen(PURPPEN)
-            self.selectedRect.is_selected = True
-        for c in [self.chkbrk,self.chkcirc,self.chkpower]: c.setEnabled(self.selectedRect != None)
+            r.setPen(PURPPEN)
+            r.is_selected = True
+        for c in [self.chkbrk,self.chkcirc,self.chkpower]: c.setEnabled(r != None)
 
 def make_widget() -> MainWindow:
     tkm = TrackMap("assets/greenline.csv")
@@ -956,7 +752,8 @@ def make_widget() -> MainWindow:
     window.ui = UIControls(window)
 
     layout = QVBoxLayout(window)
-    layout.addWidget(tkm.view())
+    window.track_view_widget = tkm.view()
+    layout.addWidget(window.track_view_widget)
     layout.addWidget(window.ui.controls)
 
     return window

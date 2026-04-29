@@ -197,9 +197,9 @@ def _apply_signal(cmd_kmh: float, auth_km: float, sig) -> tuple[float, float]:
 
 
 
-def _apply_wayside_switches(track_map, state: SharedState) -> None:
+def _apply_wayside_switches(track_map, sw_positions: dict | None) -> None:
     """
-    Read current switch positions from wayside outputs in SharedState and
+    Read current switch positions from a wayside output snapshot and
     set block.switch_state on every switch block in the track model.
     """
     from wayside_controller import GREEN_SWITCHES
@@ -208,11 +208,8 @@ def _apply_wayside_switches(track_map, state: SharedState) -> None:
         try: return int(x)
         except Exception: return None
 
-    ws_out = state.get_wayside_outputs("Green")
-    if not ws_out:
-        return
-    sw_positions: dict = ws_out.get("switches") or {}
-    if not sw_positions:
+    sw_positions = sw_positions or {}
+    if not isinstance(sw_positions, dict) or not sw_positions:
         return
 
     for sw_id, pos in sw_positions.items():
@@ -283,15 +280,15 @@ def main() -> None:
     app.setApplicationName("Integrated Train System")
     app.setStyle("Fusion")
     light = QPalette()
-    light.setColor(QPalette.ColorRole.Window, QColor(255, 255, 255))
-    light.setColor(QPalette.ColorRole.WindowText, QColor(0, 0, 0))
-    light.setColor(QPalette.ColorRole.Base, QColor(240, 240, 240))
-    light.setColor(QPalette.ColorRole.AlternateBase, QColor(225, 225, 225))
-    light.setColor(QPalette.ColorRole.Text, QColor(0, 0, 0))
-    light.setColor(QPalette.ColorRole.ButtonText, QColor(0, 0, 0))
-    light.setColor(QPalette.ColorRole.BrightText, QColor(0, 0, 0))
-    light.setColor(QPalette.ColorRole.Button, QColor(225, 225, 225))
-    light.setColor(QPalette.ColorRole.Highlight, QColor(74, 111, 165))
+    light.setColor(QPalette.ColorRole.Window,          QColor(255, 255, 255))
+    light.setColor(QPalette.ColorRole.WindowText,      QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.Base,            QColor(240, 240, 240))
+    light.setColor(QPalette.ColorRole.AlternateBase,   QColor(225, 225, 225))
+    light.setColor(QPalette.ColorRole.Text,            QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.ButtonText,      QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.BrightText,      QColor(0, 0, 0))
+    light.setColor(QPalette.ColorRole.Button,          QColor(225, 225, 225))
+    light.setColor(QPalette.ColorRole.Highlight,       QColor(74, 111, 165))
     light.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
     app.setPalette(light)
 
@@ -305,6 +302,20 @@ def main() -> None:
 
     track_window = track_model.make_widget()
     track_map = track_window.tkm
+    track_window._launcher_managed = True
+
+    def _on_track_model_loaded(new_track_map) -> None:
+        nonlocal track_map, yard_block
+        track_map = new_track_map
+        yard_block = track_map.block(GREEN_YARD_BLOCK_NUM)
+
+    track_window.track_model_loaded_callback = _on_track_model_loaded
+
+    def _open_track_model_csv(_line: str) -> None:
+        try: track_window.ui.open_file_browser()
+        except Exception: pass
+
+    ctc_win.track_tab_changed_callback = _open_track_model_csv
 
     #do not create trains at launch. Spawn only when CTC creates a Manual-* dispatch.
     track_map.trains = []
@@ -542,7 +553,7 @@ def main() -> None:
         signals = ws_signals
         # Apply wayside switch positions to track model before physics runs.
         # The wayside is the sole authority on switch states.
-        _apply_wayside_switches(track_map, state)
+        _apply_wayside_switches(track_map, ws_switches)
         _apply_wayside_signals(track_map, state)
         allow_motion = _motion_allowed(ctc_win)
 
@@ -632,24 +643,11 @@ def main() -> None:
             else:
                 cmd = 0.0
                 auth = 0.0
-            # Train movement is governed by REAL-TIME OCCUPANCY of the next
-            # route block, not by static signal colors. Static signals on the
-            # wayside are now informational only (they show occupancy state
-            # to operators but don't gate train motion).
-            #
-            # The ONE exception: bidir section entry signals (76, 100, 20, 150).
-            # When a section is locked the wrong way, these go red to prevent
-            # opposing trains from entering. Trains MUST honor these even
-            # though the immediately next block may be empty.
-            BIDIR_ENTRY_BLOCKS = {76, 100, 20, 150}
-            route_idx = getattr(tr, "_route_idx", 0)
-            next_route_bn = (tr._route[route_idx + 1]
-                             if hasattr(tr, "_route") and 0 <= route_idx + 1 < len(tr._route)
-                             else None)
-            if next_route_bn in BIDIR_ENTRY_BLOCKS:
-                next_sig = _lookup_signal(signals, next_route_bn)
-                if next_sig == "red":
-                    cmd, auth = 0.0, 0.0
+            # Apply wayside signals with deeper route lookahead so trains
+            # always receive a commanded speed of 0 while heading into red.
+            # They resume automatically when the looked-ahead signal clears.
+            sig_ahead = _signal_lookahead(tr, signals, lookahead=25)
+            cmd, auth = _apply_signal(cmd, auth, sig_ahead)
             # Real-time occupancy check: if the next route block is occupied
             # by another train, stop. This is the primary mechanism preventing
             # collisions and replaces signal-based headway.

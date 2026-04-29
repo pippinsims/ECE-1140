@@ -1172,6 +1172,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         # SharedState bridge (None when running standalone)
         self._shared: "SharedState | None" = shared_state
+        self.track_tab_changed_callback = None
         self.setWindowTitle("Central Traffic Control Office")
         self.resize(1400, 1032)
 
@@ -1211,11 +1212,13 @@ class MainWindow(QMainWindow):
 
         # ── Track Diagram panel ───────────────────────────────────────────────
         track_tabs = QTabWidget()
+        self.track_tabs = track_tabs
         track_tabs.setStyleSheet(
             "QTabWidget::pane { background:#f0f0f0; border:2px solid #c8c8c8; border-radius:10px; }"
             "QTabBar::tab { background:#e0e0e0; color:#333; padding:6px 20px; font-weight:600; }"
             "QTabBar::tab:selected { background:#f0f0f0; color:#000; border-bottom:2px solid #4a6fa5; }"
         )
+        track_tabs.tabBarClicked.connect(self._on_track_tab_changed)
 
         # Green Line tab
         green_tab = QWidget()
@@ -1734,6 +1737,16 @@ class MainWindow(QMainWindow):
             self.switch_combo_detail.setEnabled(False)
         else:
             self.switch_widget.hide()
+
+    def _on_track_tab_changed(self, idx: int) -> None:
+        """Notify the launcher when the user switches between line tabs."""
+        callback = getattr(self, "track_tab_changed_callback", None)
+        if not callable(callback):
+            return
+        if idx == 0:
+            callback("Green")
+        elif idx == 1:
+            callback("Red")
 
     def _on_maint_toggled(self, checked: bool):
         """In maintenance mode: allow editing Suggested Speed, Authority, and Switch; mark block occupied."""

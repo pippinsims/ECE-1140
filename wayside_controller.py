@@ -821,72 +821,32 @@ def compute_wayside_outputs(block_state, block_lengths, switches_def,
         norm_blk = sw["normal"][0]
         rev_blk  = sw["reverse"][0]
 
+        # ── RULE 1: Safety – never flip while train is on host block ────────
         if host in occupied:
-            # SAFETY RULE: never flip a switch while a train is on the host block
             switch_states[sw_id] = "normal"
             continue
 
-        # One-way exit guard: skip reverse routing for switches whose reverse
-        # branch is a truly invalid/unused siding (rev_blk < 0).
-        # Block 0 = yard IS a valid destination, so rev_blk == 0 is allowed.
-        # Only skip when rev_blk is negative (no such blocks exist currently,
-        # but guard kept for safety).
-        if rev_blk < 0:
+        # ── RULE 2: Yard switches (reverse branch = block 0) ─────────────────
+        if sw_id == "SW62":
             switch_states[sw_id] = "normal"
             continue
-
-        # Switches whose reverse branch is the yard (block 0):
-        # - SW62 (host=62, norm=63): yard EXIT — train departs 0→63.
-        #   Keep normal always; departure handled by CTC movement logic.
-        # - SW57 (host=57, norm=58): yard ENTRY — return train arrives 57→0.
-        #   Set reverse when authority BFS has reached yard (block 0),
-        #   meaning a return train is cleared into the yard from block 57.
-        if rev_blk == 0:
-            # Distinguish entry vs exit by checking if the normal branch
-            # is a yard-side block (58-62) or a mainline block (63+).
-            # SW62 norm=63 (mainline), SW57 norm=58 (yard-side track).
-            if norm_blk >= 63:
-                # Yard-exit switch (SW62-style): always normal.
-                switch_states[sw_id] = "normal"
-            else:
-                # Yard-entry switch (SW57-style): reverse when return
-                # train has authority reaching yard (0 in all_reach).
-                if 0 in all_reach and norm_blk not in occupied:
-                    switch_states[sw_id] = "reverse"
-                else:
-                    switch_states[sw_id] = "normal"
+        if sw_id == "SW57":
+            switch_states[sw_id] = "reverse" if 0 in all_reach else "normal"
             continue
 
-        # General rule: reverse only to let a merging/approaching train through.
-        # Return-route trains are handled by CTC pushing the next return-path
-        # block as occupied in block_state (SW28 lookahead injection).
-        #
-        # Special case: SW77 (host=77, normal=78, reverse=101) is a DIVERGING
-        # switch — a train coming from block 78 (second N pass) needs to exit
-        # to 101 (R section), not loop back to 78 again.
-        # We detect the second pass by checking if SW85 is in reverse state
-        # (SW85 reverse = 100→85, meaning the N-loop entry was used).
-        # If SW85 went reverse AND no train is on 78 (norm branch) → SW77 reverse.
+        # ── RULE 3: Loop routing "memory" – diverging switches ──────────────
+        # SW77: second N-loop pass detection
         if sw_id == "SW77":
-            # Diverging switch: train on second N pass should exit to 101 (R).
-            # Override the safety rule — train IS on host (77) but we still
-            # need reverse so it exits to 101 not 78.
-            if _n_loop_second_pass:
-                switch_states[sw_id] = "reverse"
-            else:
-                switch_states[sw_id] = "normal"
+            switch_states[sw_id] = "reverse" if _n_loop_second_pass else "normal"
             continue
 
+        # SW1: A-loop active detection
         if sw_id == "SW1":
-            # Diverging switch: train coming through A (3→2→1) should exit
-            # to 13 (D section) not back to 2.
-            # Override safety rule — train IS on host (1) but needs reverse.
-            if _a_loop_active:
-                switch_states[sw_id] = "reverse"
-            else:
-                switch_states[sw_id] = "normal"
+            switch_states[sw_id] = "reverse" if _a_loop_active else "normal"
             continue
 
+        # ── RULE 4: General merge rule ────────────────────────────────────
+        # Reverse if reverse-branch block is occupied AND normal branch is not
         if rev_blk in occupied and norm_blk not in occupied:
             switch_states[sw_id] = "reverse"
         else:

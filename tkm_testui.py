@@ -17,6 +17,9 @@ class TestUI(QWidget):
 
         self.inputlayout = QVBoxLayout()
 
+        self.curtrains:dict[tkm.Train,QHBoxLayout] = {}
+        self.m = m
+
         def label(words, layout):
             lbl = QLabel(words)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -27,7 +30,7 @@ class TestUI(QWidget):
         for b in m.tkm.blocks: self.addBlockIn(b)
 
         label("---From Train Model---", self.inputlayout)
-        for t in m.tkm.trains: self.addTrainIn(t)
+        # for t in m.tkm.trains: self.addTrainIn(t)
 
         self.uilayout.addLayout(self.inputlayout)
 
@@ -69,6 +72,15 @@ class TestUI(QWidget):
 
         self.outputlayout.addLayout(perblk)
 
+    def remTrainIn(self, t: tkm.Train):
+        l = self.curtrains.pop(t)
+        if l:            
+            while l.count():
+                it = l.takeAt(0)
+                if it.widget(): it.widget().deleteLater()
+            l.deleteLater()
+
+
     def addTrainIn(self, t: tkm.Train):
         lbl = QLabel("Train "+str(t.num)+" Speed (km/hr):\t")
         inp = QLineEdit()
@@ -90,6 +102,8 @@ class TestUI(QWidget):
         pertrn.addWidget(btn)
 
         self.inputlayout.addLayout(pertrn)
+
+        self.curtrains[t] = pertrn
 
     def addBlockIn(self, b: tkm.Block):
         swbox:QCheckBox = None
@@ -130,6 +144,7 @@ class TestUI(QWidget):
             if swbox:
                 print(f"Block {b.num} switch set to:", switches[tkm.to_int(swbox.isChecked())])
                 b.switch_state = tkm.to_int(swbox.isChecked())
+                print(f"{b.num} switched to {[b.chosen_prev(),b.chosen_next()]}")
             if crbox:
                 print(f"Block {b.num} crossing set to: ", "Active" if crbox.isChecked() else "Non-active")
                 b.crossing_state = crbox.isChecked() 
@@ -160,5 +175,8 @@ class TestUI(QWidget):
         return super().hide()
     
     def update(self):
+        if len(self.m.tkm.trains) != len(self.curtrains):
+            for x in [x for x in self.curtrains.keys() if x not in self.m.tkm.trains]: self.remTrainIn(x)
+            for x in [x for x in self.m.tkm.trains if x not in self.curtrains.keys()]: self.addTrainIn(x)
         for x in self.blocksout: x[1].setText(self.blockOut(x[0]))
         for x in self.trainsout: x[1].setText(self.trainOut(x[0]))
