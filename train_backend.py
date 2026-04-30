@@ -1,6 +1,7 @@
 # ai was used to help with code development logic and structure
 
 import math
+import random
 
 #pulled from provided specsheet
 samplePeriodSec             = 0.1      # 100 ms tick to update 
@@ -30,9 +31,9 @@ class TrainModel:
     def __init__(self):
 
         # inputs from track model
-        self.commandedSpeedKmh          = 70.0
+        self.commandedSpeedKmh          = 0.0   # starts at 0; track model provides actual value
         self.speedLimitKmh              = 70.0
-        self.commandedAuthorityKm       = 0.0
+        self.commandedAuthorityKm       = 0.0   # starts at 0; track model provides actual value
         self.beaconData                 = ""
         self.trackGradePercent          = 0.0
         self.trackDecelerationLimitKmh2 = 0.0
@@ -68,14 +69,20 @@ class TrainModel:
         self.onboardPassengers  = 0
         self.approachingStation = ""
 
+        # Passenger exchange (station events)
+        self.lastBoardedCount = 0
+        self.lastDeboardedCount = 0
+        self._prev_boarding_count = 0
+
         # previous step value needed for trapezoidal integration
         self._prevVelocityMps = 0.0
         self._prevAccelMps2   = 0.0
 
-    def tick(self):
+    def tick(self, dt=None):
         # helps simulate time so the values change throughout
-        # backend runs every .1 seconds
-        dt          = samplePeriodSec 
+        # default .1 s; integrated launcher may pass dt scaled by CTC sim speed
+        if dt is None:
+            dt = samplePeriodSec
         velocityMps = self.currentSpeedKmh / 3.6
 
         # determine which brake mode is active
@@ -105,11 +112,8 @@ class TrainModel:
         rawAccelMps2 = netForceN / emptyCarMassKg
 
         # apply track model acceleration and deceleration limits
-        if self.trackAccelerationLimitKmh2 > 0.0:
-            accelCapMps2 = self.trackAccelerationLimitKmh2 / 12960.0
-
-        if self.trackDecelerationLimitKmh2 > 0.0:
-            decelCapMps2 = self.trackDecelerationLimitKmh2 / 12960.0
+        accelCapMps2 = float('inf') if self.trackAccelerationLimitKmh2 <= 0.0 else self.trackAccelerationLimitKmh2 / 12960.0
+        decelCapMps2 = float('inf') if self.trackDecelerationLimitKmh2 <= 0.0 else self.trackDecelerationLimitKmh2 / 12960.0
         
         #will never exceed the cap of accel
         if rawAccelMps2 > accelCapMps2:
@@ -135,9 +139,22 @@ class TrainModel:
         self.distanceTraveledKm += distanceDeltaM / 1000.0
         self.commandedAuthorityKm = max(0.0, self.commandedAuthorityKm - distanceDeltaM / 1000.0)
 
+        # Passenger exchange:
+        # Track Model provides `boardingPassengerCount` when at a station.
+        # Apply boarding + random deboarding ONCE per station stop (rising edge).
+        bc = int(self.boardingPassengerCount or 0)
+        if bc > 0 and int(self._prev_boarding_count) <= 0:
+            # Deboard cannot exceed onboard passengers.
+            deboard = 0
+            if int(self.onboardPassengers) > 0:
+                deboard = random.randint(0, int(self.onboardPassengers))
+            self.lastBoardedCount = bc
+            self.lastDeboardedCount = deboard
+            self.onboardPassengers = max(0, int(self.onboardPassengers) - int(deboard) + int(bc))
+        self._prev_boarding_count = bc
+
         # update state for this tick
         self.currentSpeedKmh        = newVelocityMps * 3.6
-        self.onboardPassengers     += self.boardingPassengerCount
         self.boardingPassengerCount  = 0
         self.elapsedTimeSec        += dt
         self._prevVelocityMps       = newVelocityMps
@@ -190,93 +207,106 @@ class TrainModel:
 
 
 #current integration for train model and controller to check functionality.
-# class TrainSystem:
-#     def __init__(self, model=None, controller=None):
-#         self.model = model or TrainModel()
-#
-#         if controller is None:
-#             from train_controller_backend import TrainController as _TrainController
-#             controller = _TrainController(train_id=1)
-#
-#         self.controller = controller
-#         self._authority_pushed_to_controller_m = None
-#         self._prev_faults = {"pwr": False, "brk": False, "sig": False}
-#
-#     def _sync_faults(self):
-#         m = self.model
-#         c = self.controller
-#
-#         pwr = bool(m.hasPowerFault)
-#         brk = bool(m.hasBrakeFault)
-#         sig = bool(m.hasEngineFault)
-#
-#         c.fault_power = pwr
-#         c.fault_brake = brk
-#         c.fault_signal = sig
-#
-#         if (pwr and not self._prev_faults["pwr"]) or (brk and not self._prev_faults["brk"]) or (sig and not self._prev_faults["sig"]):
-#             try:
-#                 c.emergency_brake = True
-#             except Exception:
-#                 pass
-#         self._prev_faults = {"pwr": pwr, "brk": brk, "sig": sig}
-#
-#     def _sync_authority_controller_to_model_if_user_changed(self):
-#         self._push_model_authority_to_controller()
-#
-#     def _push_model_authority_to_controller(self):
-#         c = self.controller
-#         m = self.model
-#         authority_m = max(0.0, m.commandedAuthorityKm * 1000.0)
-#         c.authority = authority_m
-#         self._authority_pushed_to_controller_m = authority_m
-#
-#     def tick(self, dt=samplePeriodSec):
-#         m = self.model
-#         c = self.controller
-#
-#         self._sync_authority_controller_to_model_if_user_changed()
-#
-#         c.current_speed = kmhToMph(m.currentSpeedKmh)
-#         c.commanded_speed = kmhToMph(m.commandedSpeedKmh)
-#         c.speed_limit = kmhToMph(m.speedLimitKmh)
-#         c.distance_travelled_km = m.distanceTraveledKm
-#
-#         self._sync_faults()
-#
-#         passenger_ebrake = bool(m.isPassengerEmergencyBrakeOn)
-#         if passenger_ebrake:
-#             c.emergency_brake = True
-#
-#         c.monitor()
-#         c.calc_power(dt)
-#
-#         combined_ebrake = bool(getattr(c, "emergency_brake", False))
-#         c.emergency_brake = combined_ebrake
-#         m.isEmergencyBrakeOn = combined_ebrake
-#
-#         manual_svc = bool(getattr(c, "service_brake", False))
-#         auto_svc = bool(getattr(c, "auto_service_brake", False))
-#         m.isServiceBrakeOn = (manual_svc or auto_svc) and not m.isEmergencyBrakeOn
-#
-#         m.areExternalLightsOn = bool(getattr(c, "headlights", False))
-#         m.areInternalLightsOn = bool(getattr(c, "interior_lights", 0))
-#
-#         doors_state = int(getattr(c, "doors_state", 0))
-#         m.isRightDoorOpen = doors_state in (1, 3)
-#         m.isLeftDoorOpen = doors_state in (2, 3)
-#
-#         m.cabinTemperatureC = fToC(float(getattr(c, "cabin_temp", cToF(m.cabinTemperatureC))))
-#
-#         m.onboardPassengers = int(getattr(c, "passengers", m.onboardPassengers))
-#         m.boardingPassengerCount = 0
-#
-#         beacon_str = (m.beaconData or "").strip()
-#         c.next_station = beacon_str
-#         m.approachingStation = beacon_str
-#
-#         m.requestedTractionPowerW = float(getattr(c, "power_output", 0.0))
-#
-#         m.tick()
-#
-#         self._push_model_authority_to_controller()
+class TrainSystem:
+    def __init__(self, model=None, controller=None):
+        self.model = model or TrainModel()
+
+        if controller is None:
+            from train_controller_backend import TrainController as _TrainController
+            controller = _TrainController(train_id=1)
+
+        self.controller = controller
+        self._authority_pushed_to_controller_m = None
+        self._prev_faults = {"pwr": False, "brk": False, "sig": False}
+
+    def _sync_faults(self):
+        m = self.model
+        c = self.controller
+
+        pwr = bool(m.hasPowerFault)
+        brk = bool(m.hasBrakeFault)
+        sig = bool(m.hasEngineFault)
+
+        c.fault_power = pwr
+        c.fault_brake = brk
+        c.fault_signal = sig
+
+        if (pwr and not self._prev_faults["pwr"]) or (brk and not self._prev_faults["brk"]) or (sig and not self._prev_faults["sig"]):
+            try:
+                c.emergency_brake = True
+            except Exception:
+                pass
+        self._prev_faults = {"pwr": pwr, "brk": brk, "sig": sig}
+
+    def _sync_authority_controller_to_model_if_user_changed(self):
+        self._push_model_authority_to_controller()
+
+    def _push_model_authority_to_controller(self):
+        c = self.controller
+        m = self.model
+        authority_m = max(0.0, m.commandedAuthorityKm * 1000.0)
+        c.authority = authority_m
+        self._authority_pushed_to_controller_m = authority_m
+
+    def tick(self, dt=samplePeriodSec):
+        m = self.model
+        c = self.controller
+
+        # ── Correct data flow per system architecture: ──
+        # Track Model  → Train Model  → Train Controller
+        #
+        # The Track Model sets m.commandedSpeedKmh, m.speedLimitKmh,
+        # m.commandedAuthorityKm directly on the model.
+        # The controller READS these from the model (not the other way).
+
+        # Push track-sourced values FROM model TO controller
+        c.commanded_speed = kmhToMph(m.commandedSpeedKmh)
+        c.speed_limit     = kmhToMph(m.speedLimitKmh)
+        c.authority        = m.commandedAuthorityKm * 1000.0  # km → m
+
+        # Feed actual speed back to controller
+        c.current_speed = kmhToMph(m.currentSpeedKmh)
+        c.distance_travelled_km = m.distanceTraveledKm
+
+        self._sync_faults()
+
+        passenger_ebrake = bool(m.isPassengerEmergencyBrakeOn)
+        if passenger_ebrake:
+            c.emergency_brake = True
+
+        c.monitor()
+        c.calc_power(dt)
+
+        combined_ebrake = bool(getattr(c, "emergency_brake", False))
+        c.emergency_brake = combined_ebrake
+        m.isEmergencyBrakeOn = combined_ebrake
+
+        manual_svc = bool(getattr(c, "service_brake", False))
+        auto_svc = bool(getattr(c, "auto_service_brake", False))
+        m.isServiceBrakeOn = (manual_svc or auto_svc) and not m.isEmergencyBrakeOn
+
+        m.areExternalLightsOn = bool(getattr(c, "headlights", False))
+        m.areInternalLightsOn = bool(getattr(c, "interior_lights", 0))
+
+        doors_state = int(getattr(c, "doors_state", 0))
+        m.isRightDoorOpen = doors_state in (1, 3)
+        m.isLeftDoorOpen = doors_state in (2, 3)
+
+        m.cabinTemperatureC = fToC(float(getattr(c, "cabin_temp", cToF(m.cabinTemperatureC))))
+
+        # Passengers are owned by the Train Model (Track Model boards; Train Model deboads).
+        # The controller UI should display the model's value, not overwrite it.
+        try:
+            c.passengers = int(m.onboardPassengers)
+        except Exception:
+            pass
+
+        beacon_str = (m.beaconData or "").strip()
+        c.next_station = beacon_str
+        m.approachingStation = beacon_str
+
+        m.requestedTractionPowerW = float(getattr(c, "power_output", 0.0))
+
+        m.tick(dt)
+
+        self._push_model_authority_to_controller()

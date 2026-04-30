@@ -1,12 +1,13 @@
 # ai was used for styling and layout creation of the ui
 
+import os
 import sys
-from PyQt5.QtWidgets import (
+from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QFrame, QLabel, QPushButton,
     QGridLayout, QHBoxLayout, QVBoxLayout, QGroupBox, QSizePolicy, QGraphicsDropShadowEffect
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QFont, QColor, QPixmap
 
 # colors used
 BG_PAGE         = "#F7F8FA"
@@ -28,6 +29,13 @@ ADS_TEXT        = "#6B7280"
 
 
 class TrainControlUI(QMainWindow):
+    # Ad images to cycle through (optional). If files are missing, a text fallback is shown.
+    AD_IMAGES = [
+        "assets/ad_1_grimace_shake.svg",
+        "assets/ad_2_duolingo.svg",
+        "assets/ad_3_monster_energy.svg",
+    ]
+
     def __init__(self, trainModel=None):
         super().__init__()
 
@@ -36,6 +44,7 @@ class TrainControlUI(QMainWindow):
         self.engineFaultOn    = False
         self.brakeFaultOn     = False
         self.powerFaultOn     = False
+        self.currentAdIndex   = 0
 
         self.setWindowTitle("Train Model")
         self.setBaseSize(1080, 800)
@@ -58,7 +67,7 @@ class TrainControlUI(QMainWindow):
         headerLayout.setContentsMargins(24, 0, 24, 0)
 
         titleLabel = QLabel("Train Model")
-        titleLabel.setFont(QFont("Segoe UI", 18, QFont.Bold))
+        titleLabel.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
         titleLabel.setStyleSheet(f"color: {TEXT_PRIMARY}; background: transparent;")
         headerLayout.addWidget(titleLabel)
         headerLayout.addStretch()
@@ -96,10 +105,11 @@ class TrainControlUI(QMainWindow):
 
         self.speedLabel      = self._addStatRow(trainGrid, 0, "Speed",        "0.00 mph")
         self.speedLimitLabel = self._addStatRow(trainGrid, 1, "Speed Limit",  "0.00 mph")
-        self.stationLabel    = self._addStatRow(trainGrid, 2, "Next Station", "—")
+        self.stationLabel    = self._addStatRow(trainGrid, 2, "Station Info", "—")
         self.distanceLabel   = self._addStatRow(trainGrid, 3, "Distance",     "0.00 mi")
-        self.powerLabel      = self._addStatRow(trainGrid, 4, "Power",        "0.00 kW")
-        self.accelLabel      = self._addStatRow(trainGrid, 5, "Acceleration", "0.0000 ft/s²")
+        self.authorityLabel  = self._addStatRow(trainGrid, 4, "Authority",    "0.00 mi")
+        self.powerLabel      = self._addStatRow(trainGrid, 5, "Power",        "0.00 kW")
+        self.accelLabel      = self._addStatRow(trainGrid, 6, "Acceleration", "0.0000 ft/s²")
         trainCardLayout.addStretch()
         topLayout.addWidget(trainCard, stretch=2)
 
@@ -167,9 +177,9 @@ class TrainControlUI(QMainWindow):
         passengerInner.addSpacing(8)
 
         self.emergencyBtn = QPushButton("Emergency Brake")
-        self.emergencyBtn.setFont(QFont("Segoe UI", 14, QFont.Bold))
+        self.emergencyBtn.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
         self.emergencyBtn.setMinimumHeight(52)
-        self.emergencyBtn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.emergencyBtn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.emergencyBtn.setStyleSheet(self._emergencyStyle(False))
         self.emergencyBtn.clicked.connect(self.toggleEmergencyBrake)
         passengerInner.addWidget(self.emergencyBtn)
@@ -202,11 +212,11 @@ class TrainControlUI(QMainWindow):
         """)
         adsCardLayout = QVBoxLayout(adsCard)
         adsCardLayout.setContentsMargins(18, 14, 18, 14)
-        adsPlaceholder = QLabel("[ Ad Content Placeholder ]")
-        adsPlaceholder.setFont(QFont("Segoe UI", 14))
-        adsPlaceholder.setAlignment(Qt.AlignCenter)
-        adsPlaceholder.setStyleSheet(f"color: {ADS_BORDER}; background: transparent; border: none;")
-        adsCardLayout.addWidget(adsPlaceholder)
+        self.adsLabel = QLabel()
+        self.adsLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.adsLabel.setStyleSheet("background: transparent; border: none;")
+        self._updateAdImage()
+        adsCardLayout.addWidget(self.adsLabel)
         bottomLayout.addWidget(adsCard, stretch=2)
 
         bodyLayout.addWidget(bottomRow, stretch=2)
@@ -215,6 +225,11 @@ class TrainControlUI(QMainWindow):
         self.refreshTimer = QTimer()
         self.refreshTimer.timeout.connect(self.refreshFromModel)
         self.refreshTimer.start(100)
+
+        # ad cycling timer (15 second interval)
+        self.adTimer = QTimer()
+        self.adTimer.timeout.connect(self._cycleAd)
+        self.adTimer.start(15000)
 
         # add doorlabel for test compatibility
         self.doorLabel = QLabel()
@@ -236,7 +251,7 @@ class TrainControlUI(QMainWindow):
     def _cardTitle(self, text):
         # section title label inside a card
         lbl = QLabel(text.upper())
-        lbl.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        lbl.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         lbl.setStyleSheet(f"""
             color: {TEXT_SECONDARY};
             letter-spacing: 1px;
@@ -255,9 +270,9 @@ class TrainControlUI(QMainWindow):
         lbl.setStyleSheet(f"color: {TEXT_SECONDARY}; background: transparent; border: none;")
 
         val = QLabel(valueText)
-        val.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        val.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
         val.setFixedHeight(32)
-        val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         val.setStyleSheet(f"color: {TEXT_VALUE}; background: transparent; border: none;")
 
         grid.addWidget(lbl, row, 0)
@@ -267,7 +282,7 @@ class TrainControlUI(QMainWindow):
     def _makeFaultBtn(self, text, callback):
         # creates an inactive fault toggle button
         btn = QPushButton(text)
-        btn.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        btn.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         btn.setMinimumHeight(44)
         btn.setStyleSheet(self._faultStyle(False))
         btn.clicked.connect(callback)
@@ -290,6 +305,32 @@ class TrainControlUI(QMainWindow):
         return (f"QPushButton {{ background-color: {BG_PAGE}; color: {TEXT_SECONDARY}; "
                 f"border: 1px solid {BORDER_CARD}; border-radius: 12px; }}"
                 f"QPushButton:hover {{ background-color: {DIVIDER}; color: {TEXT_PRIMARY}; }}")
+
+    def _updateAdImage(self) -> None:
+        """Load and display the current ad image (with text fallback)."""
+        try:
+            if 0 <= self.currentAdIndex < len(self.AD_IMAGES):
+                rel = self.AD_IMAGES[self.currentAdIndex]
+                ad_path = os.path.join(os.path.dirname(__file__), rel)
+                if os.path.exists(ad_path):
+                    pm = QPixmap(ad_path)
+                    if not pm.isNull():
+                        self.adsLabel.setPixmap(
+                            pm.scaledToHeight(200, Qt.TransformationMode.SmoothTransformation)
+                        )
+                        return
+        except Exception:
+            pass
+        self.adsLabel.setText("[ Ad Content ]")
+        self.adsLabel.setFont(QFont("Segoe UI", 14))
+        self.adsLabel.setStyleSheet(f"color: {ADS_BORDER}; background: transparent; border: none;")
+
+    def _cycleAd(self) -> None:
+        """Move to the next ad in the rotation."""
+        if not self.AD_IMAGES:
+            return
+        self.currentAdIndex = (self.currentAdIndex + 1) % len(self.AD_IMAGES)
+        self._updateAdImage()
 
     # toggles 
 
@@ -328,6 +369,7 @@ class TrainControlUI(QMainWindow):
         self.speedLabel.setText("%.2f mph"    % trainBackendModel.displayCurrentSpeedMph())
         self.speedLimitLabel.setText("%.2f mph"    % trainBackendModel.displaySpeedLimitMph())
         self.distanceLabel.setText("%.2f mi"    % trainBackendModel.displayDistanceTraveledMiles())
+        self.authorityLabel.setText("%.2f mi"  % trainBackendModel.displayRemainingAuthorityMiles())
         self.powerLabel.setText("%.2f kW"     % trainBackendModel.displayRequestedTractionPowerKw())
         self.accelLabel.setText("%.4f m/s²"  % trainBackendModel.displayCurrentAccelFps2())
         self.stationLabel.setText(trainBackendModel.approachingStation if trainBackendModel.approachingStation else "—")
